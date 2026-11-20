@@ -1,0 +1,878 @@
+/* 감독 인생 시뮬레이터 - 샘플 UI (모바일 세로 우선) */
+(function () {
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const POS = G.POS;
+  const S = { screen: 'start', tab: 'home', tsub: 'form', ssub: 'ALL', sel: null, startC: 'ENG', startT: 0, startSel: null, name: '', tc: 'ENG', tt: 0, tabsub: 'table', sc: { c: 'ENG', t: 0, team: null }, lastSearch: [], match: null, scoutSub: 'find', toastT: 0, view: null, tr: { sub: 'rec', negPid: null, fc: 'ENG', ft: 0, fteam: null, fpos: 'ALL' }, fxs: [], cur: 0, results: [] };
+
+  function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(S.toastT); S.toastT = setTimeout(() => el.classList.remove('show'), 2200); }
+  const W = () => G.world();
+  const T = () => G.userTeam();
+  const starsHtml = n => { let s = ''; for (let i = 1; i <= 5; i++) s += i <= n ? '★' : '<span class="off">★</span>'; return `<span class="stars">${s}</span>`; };
+  const starRange = (lo, hi) => lo === hi ? starsHtml(lo) : `<span class="stars">${'★'.repeat(lo)}<span class="off">${'★'.repeat(hi - lo)}</span></span><small>(${lo}~${hi})</small>`;
+  const posB = p => `<span class="badge p-${POS[p]}">${POS[p]}</span>`;
+  const attrCls = v => v >= 15 ? 'a-hi' : v >= 10 ? 'a-mid' : 'a-lo';
+  const barCls = v => v < 40 ? 'bad' : v < 65 ? 'warn' : '';
+  const teamCol = id => `hsl(${(id * 47) % 360},62%,46%)`;
+  const lvRating = lv => Math.round(40 + 60 * lv);
+  const M = v => (Math.round(v * 10) / 10) + 'M';
+
+  /* ---------- 공통 컴포넌트 ---------- */
+  function seg(label, val, labels, attrs) {
+    let b = '';
+    for (let i = 1; i <= 5; i++) b += `<button class="${i === val ? 'on' : ''}" ${attrs} data-v="${i}">${i}</button>`;
+    return `<div class="seg"><div class="segh"><span>${label}</span><b class="good">${labels[val - 1]}</b></div><div class="segb">${b}</div></div>`;
+  }
+  function selOpts(labels, val) { return labels.map((l, i) => `<option value="${i + 1}" ${i + 1 === val ? 'selected' : ''}>${i + 1} · ${l}</option>`).join(''); }
+  function evBadge(e, p) {
+    let h = `<div class="row" style="flex-wrap:wrap;gap:4px 12px"><span>현재 ${starRange(e.caLo, e.caHi)}</span><span>잠재 ${starRange(e.paLo, e.paHi)}</span></div>`;
+    h += `<small>신뢰도 ${e.rel} · ${e.s}시즌 ${e.w}주차 평가</small>`;
+    const gap = e.pa - e.ca;
+    if (p.a >= 31) h += ` <span class="chip warn-t">하락 위험</span>`;
+    else if (p.a >= 27) h += ` <span class="chip">전성기</span>`;
+    else if (gap >= 30) h += ` <span class="chip good">성장 여지 큼</span>`;
+    else if (gap >= 12) h += ` <span class="chip">성장 여지 있음</span>`;
+    return h;
+  }
+
+  /* ---------- 시작 화면 ---------- */
+  function viewStart() {
+    const w = W();
+    const c = G.COUNTRIES.find(x => x.id === S.startC);
+    const L = w.lg[S.startC][S.startT];
+    const teams = L.teams.slice().sort((a, b) => w.teams[b].lv - w.teams[a].lv);
+    const hasSave = S.hasSave;
+    let h = `<div class="hero"><h1>⚽ 감독 인생 시뮬레이터</h1><div class="sub">샘플 버전 · 4부리그 벤치부터 유럽 정상까지</div></div>`;
+    h += `<div class="card"><div class="infobox">이 샘플은 PRD v1.0의 핵심(리그·전술·선수 성장·훈련·스카우팅·2D 격자 경기)을 담은 프로토타입입니다. 국내 컵과 챔피언스리그, 경기 중 교체는 아직 없습니다. 클럽·선수 이름은 모두 가상의 임시 이름입니다.</div></div>`;
+    if (hasSave) h += `<div class="card"><button class="btn blue full" data-act="loadgame">💾 이어하기 (저장된 게임)</button></div>`;
+    h += `<div class="card"><h2>감독 이름</h2><input id="nm" value="${esc(S.name)}" maxlength="12" placeholder="감독 이름 (예: 김감독)" data-chg="name"></div>`;
+    h += `<div class="card"><h2>국가 · 리그 선택</h2><div class="row"><select data-chg="startC">${G.COUNTRIES.map(x => `<option value="${x.id}" ${x.id === S.startC ? 'selected' : ''}>${x.name}</option>`).join('')}</select>
+      <select data-chg="startT">${[0, 1, 2, 3].map(t => `<option value="${t}" ${t === S.startT ? 'selected' : ''}>${t + 1}부 (${w.lg[S.startC][t].teams.length}팀)</option>`).join('')}</select></div>
+      <small>모든 리그에서 팀을 자유롭게 고를 수 있습니다. 강팀일수록 이사회 기대치가 높습니다.</small></div>`;
+    h += `<div class="list">`;
+    teams.forEach((id, i) => {
+      const t = w.teams[id];
+      const goal = Math.max(1, Math.round((i + 1) * 0.85));
+      h += `<div class="item ${S.startSel === id ? 'on' : ''}" data-act="pickteam" data-id="${id}"><div class="grow"><b>${esc(t.name)}</b><br><small>전력 ${lvRating(t.lv)} · 예산 ${M(t.bud)} · 목표 ${goal}위 이내</small></div><span class="badge">${i + 1}</span></div>`;
+    });
+    h += `</div>`;
+    h += `<div class="pad"><button class="btn pri full" data-act="startgame" ${S.startSel == null ? 'disabled' : ''}>${S.startSel == null ? '팀을 선택하세요' : esc(w.teams[S.startSel].name) + ' 감독으로 시작'}</button></div>`;
+    return h;
+  }
+
+  /* ---------- 셸 ---------- */
+  function shell(content) {
+    const w = W(), t = T(), c = G.COUNTRIES.find(x => x.id === t.cid);
+    const tabs = [['home', '🏠', '홈'], ['squad', '👥', '스쿼드'], ['tactics', '📋', '전술'], ['train', '🏋️', '훈련'], ['scout', '🔭', '스카우팅'], ['transfer', '💱', '이적'], ['table', '📊', '순위']];
+    let h = `<div class="topbar"><div class="row sp"><div><b>${esc(t.name)}</b><br><small>${c.name} ${t.tier + 1}부 · ${w.season}시즌 ${w.state === 'transfer' ? '이적시장 ' + w.tw.turn + '/' + w.tw.max + '턴' : Math.min(w.week, w.MAXW) + '주차'}</small></div><div style="text-align:right"><b class="good">${M(t.bud)}</b><br><small>예산</small></div></div></div>`;
+    h += content;
+    h += `<div class="nav"><div class="nav-in">${tabs.map(([k, ic, n]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-k="${k}"><span class="ic">${ic}</span>${n}</button>`).join('')}</div></div>`;
+    return h;
+  }
+
+  /* ---------- 홈 ---------- */
+  const ROUND_NAME = { lp: '리그 페이즈', po: '플레이오프', r16: '16강', qf: '8강', sf: '4강', final: '결승' };
+  function fxLabel(f) {
+    if (f.kind !== 'cl') return '🏟 리그';
+    const m = f.meta;
+    return `🏆 ${G.CL_NAME} · ${ROUND_NAME[m.round]}${m.round !== 'lp' && m.round !== 'final' ? ' ' + m.leg + '차전' : ''}`;
+  }
+  function viewHome() {
+    const w = W(), u = w.u, t = T(), L = w.lg[t.cid][t.tier];
+    if (w.state === 'seasonEnd') return viewSeasonEnd();
+    let h = '';
+    if (w.state === 'transfer') {
+      h += `<div class="card"><h3>이적시장</h3><b style="font-size:16px">${w.tw.turn}/${w.tw.max}턴 · ${w.tw.kind === 'mid' ? '시즌 중 이적시장 (후반기 시작 전)' : w.season + '시즌 개막 전'}</b><br><small>영입 협상, 매각, 방출, 등번호 변경은 이 기간에만 가능합니다. 시즌이 시작되면 바꿀 수 없습니다.</small>
+        <div class="row" style="margin-top:10px"><button class="btn pri grow" data-act="tab" data-k="transfer">💱 이적시장 열기</button><button class="btn grow" data-act="tnext">⏭ 다음 턴</button></div></div>`;
+    } else {
+      const fxs = G.userFixtures();
+      if (fxs.length) {
+        h += `<div class="card"><h3>이번 주 경기 (${fxs.length}경기)</h3>`;
+        fxs.forEach(f => {
+          const opp = w.teams[f.opp];
+          h += `<div style="margin:6px 0"><small>${fxLabel(f)}</small><br><b style="font-size:15px">${f.home ? '홈' : '원정'} vs ${esc(opp.name)}</b> <small>전력 ${lvRating(opp.lv)}</small></div>`;
+        });
+        if (fxs.length > 1) h += `<div class="warnbox">주중 ${G.CL_NAME} 경기가 겹쳐 회복 시간이 부족합니다. 선수 체력이 더 많이 떨어지니 로테이션을 고려하세요.</div>`;
+        h += `<div class="row" style="margin-top:8px"><button class="btn pri grow" data-act="prematch">⚽ 경기 진행</button></div></div>`;
+      } else {
+        h += `<div class="card"><h3>이번 주</h3><b>경기 없음</b><br><small>훈련과 스카우팅에 집중하세요.</small><div class="row" style="margin-top:10px"><button class="btn pri grow" data-act="skipweek">➡ 다음 주 진행</button></div></div>`;
+      }
+    }
+    const tbl = G.sortedTable(L), idx = tbl.indexOf(t.id);
+    const lu = G.currentLineup(t, true);
+    const avg = lu.reduce((a, id) => a + w.P[id].cd, 0) / 11;
+    const low = lu.filter(id => w.P[id].cd < 50).length;
+    const inj = t.pl.map(id => w.P[id]).filter(p => p.inj);
+    h += `<div class="card"><h3>팀 상태</h3><div class="kv"><div>선발 평균 체력<br><b>${Math.round(avg)}%</b></div><div>전술 숙련도<br><b>${Math.round(t.coh)}</b></div><div>포메이션<br><b>${t.form} (${G.TF_LABEL[t.tac.tf - 1]})</b></div><div>시즌 목표<br><b>${u.targetRank}위 이내</b></div><div>연봉 총액<br><b>${M(G.teamWages(t))}</b></div><div>예산<br><b>${M(t.bud)}</b></div></div>`;
+    if (low) h += `<div class="warnbox">체력이 낮은 선발 선수가 ${low}명입니다. 훈련 강도를 낮추거나 로테이션하세요.</div>`;
+    if (inj.length) h += `<div class="warnbox">부상자 ${inj.length}명: ${inj.slice(0, 5).map(p => '#' + p.sn + ' ' + esc(p.n) + '(' + p.inj + '주)').join(', ')}${inj.length > 5 ? ' …' : ''}</div>`;
+    h += `</div>`;
+    if (w.cl && w.cl.teams.includes(t.id)) {
+      const st = w.cl.stage[t.id];
+      h += `<div class="card"><h3>🏆 ${G.CL_NAME}</h3><b>${w.cl.phase === 'done' ? G.CL_STAGE_NAME[st] : '진행 중'}</b> <small>· 이번 시즌 출전팀 (순위 탭에서 확인)</small></div>`;
+    }
+    h += `<div class="card"><h3>순위 (${idx + 1}위)</h3><table class="tbl"><tr><th>#</th><th class="l">팀</th><th>경기</th><th>득실</th><th>승점</th></tr>`;
+    const s0 = Math.max(0, Math.min(idx - 2, tbl.length - 5));
+    tbl.slice(s0, s0 + 5).forEach((id, k) => { const r = L.tbl[id]; h += `<tr class="${id === t.id ? 'me' : ''}"><td>${s0 + k + 1}</td><td class="l">${esc(w.teams[id].name)}</td><td>${r.p}</td><td>${r.gf - r.ga}</td><td>${r.pts}</td></tr>`; });
+    h += `</table></div>`;
+    const last = u.hist[u.hist.length - 1];
+    if (last) h += `<div class="card"><h3>최근 경기</h3><b>${last.w}주차 ${last.k === 'cl' ? '[마스터스컵] ' : ''}${last.home ? '홈' : '원정'} vs ${esc(last.opp)} ${last.gf}:${last.ga} <span class="${last.r === '승' ? 'good' : last.r === '패' ? 'bad-t' : ''}">(${last.r})</span></b></div>`;
+    h += `<div class="card"><h3>소식</h3><div class="log">${u.log.slice(0, 10).map(l => `<div>${esc(l.t)}</div>`).join('') || '<small>소식이 없습니다.</small>'}</div></div>`;
+    h += `<div class="pad row"><button class="btn grow" data-act="save">💾 저장</button><button class="btn danger grow" data-act="newgame">새 게임</button></div>`;
+    return h;
+  }
+  function viewSeasonEnd() {
+    const w = W(), r = w.report;
+    let h = `<div class="card"><h2>🏁 ${r.season}시즌 종료</h2><div class="kv"><div>최종 순위<br><b style="font-size:20px">${r.rank}위</b> <small>/ ${r.N}팀</small></div><div>승점<br><b style="font-size:20px">${r.pts}</b></div></div>
+      <p>시즌 목표(${r.target}위 이내): <b class="${r.ok ? 'good' : 'bad-t'}">${r.ok ? '달성 🎉' : '미달'}</b></p>
+      <p>결과: <b class="${r.outcome === '승격' ? 'good' : r.outcome === '강등' ? 'bad-t' : ''}">${r.outcome}</b> · 우승: ${esc(r.champ)}</p>
+      ${r.cl ? `<p>${G.CL_NAME}: <b class="${r.cl.stage === 'champion' ? 'good' : ''}">${r.cl.name}</b> <small>(우승팀 ${esc(r.cl.champ || '-')})</small></p>` : ''}</div>`;
+    if (r.scorers.length) h += `<div class="card"><h3>득점 순위</h3>${r.scorers.map((s, i) => `<div class="cmp"><span>${i + 1}. ${esc(s.n)} <small>${esc(s.t)}</small></span><b>${s.g}골</b></div>`).join('')}</div>`;
+    h += `<div class="card"><div class="infobox">다음으로 모든 선수의 나이가 1살 늘고 성장·노화·은퇴, 승강, 연봉 정산이 반영됩니다. 이어서 <b>이적시장(20턴)</b>이 열립니다.</div><button class="btn pri full" data-act="nextseason">▶ ${r.season + 1}시즌 준비 (이적시장으로)</button></div>`;
+    return h;
+  }
+
+  /* ---------- 스쿼드 ---------- */
+  function numBadge(p) { return `<span class="badge" style="background:#2c3a49;min-width:34px">#${p.sn != null ? p.sn : '-'}</span>`; }
+  function gauge(v, label) { return `<div class="bar ${barCls(v)}" style="margin-top:5px"><i style="width:${Math.round(v)}%"></i></div>`; }
+  function viewSquad() {
+    const w = W(), t = T();
+    if (S.sel != null && w.P[S.sel] && w.P[S.sel].t === t.id) return viewPlayer(w.P[S.sel]);
+    const filters = ['ALL', 'GK', 'DF', 'MF', 'FW'];
+    let h = `<div class="tabs">${filters.map(f => `<button class="${S.ssub === f ? 'on' : ''}" data-act="ssub" data-k="${f}">${f === 'ALL' ? '전체' : f}</button>`).join('')}</div>`;
+    let pl = t.pl.map(id => w.P[id]);
+    if (S.ssub !== 'ALL') pl = pl.filter(p => POS[p.p] === S.ssub);
+    pl.sort((a, b) => (a.p - b.p) || ((a.sn || 99) - (b.sn || 99)));
+    const lu = new Set(G.currentLineup(t, true));
+    h += `<div class="pad"><small>${t.pl.length}명 · 선발은 ●표시 · 번호 옆 게이지는 체력 · 터치하면 상세 정보</small></div><div class="list">`;
+    pl.forEach(p => {
+      h += `<div class="item" data-act="player" data-id="${p.id}">${posB(p.p)}<div class="grow"><b>${lu.has(p.id) ? '● ' : ''}${numBadge(p)} ${esc(p.n)}</b> <small>${p.a}세</small>${p.loan ? ' <span class="chip warn-t">임대</span>' : ''}
+        ${gauge(p.cd)}</div>
+        <div style="text-align:right"><b>${Math.round(p.cd)}%</b><br><small>${p.inj ? '<span class="bad-t">🚑' + p.inj + '주</span>' : '체력'}</small></div></div>`;
+    });
+    return h + `</div>`;
+  }
+  function tendency(v, lo, hi, loTxt, hiTxt, mid) { return v <= lo ? loTxt : v >= hi ? hiTxt : mid; }
+  function viewPlayer(p) {
+    const w = W(), t = T(), e = G.ownEval(p);
+    const open = w.state === 'transfer';
+    let h = `<div class="pad"><button class="btn sm" data-act="back">← 목록</button></div>`;
+    h += `<div class="card"><div class="row sp"><div><h2 style="margin:0">${esc(p.n)}</h2><small>${esc(p.nat)} · ${p.a}세 · ${POS[p.p]}</small></div><div style="text-align:right"><b style="font-size:26px">#${p.sn}</b><br><small>등번호</small></div></div>
+      <div style="margin-top:8px">${evBadge(e, p)}</div>
+      <div style="margin-top:8px"><div class="row sp"><small>체력</small><b>${Math.round(p.cd)}%</b></div>${gauge(p.cd)}</div>
+      <div class="kv" style="margin-top:8px"><div>현재 능력 <b>${Math.round(p.ca)}</b></div><div>시장 가치 <b>${M(G.valueOf(p))}</b></div><div>연봉 <b>${M(G.wageOf(p))}</b>${p.ce ? ` <small>(${p.ce}시즌까지)</small>` : ''}${p.loan ?` <small>(임대 · 시즌 후 ${esc(w.teams[p.loan.from].name)} 복귀)</small>` : ''}</div><div>출전 <b>${p.ap}경기 · ${p.g}골</b></div></div>
+      ${p.inj ? `<div class="warnbox">🚑 부상 중: ${p.inj}주 후 복귀</div>` : ''}</div>`;
+    h += `<div class="card"><h3>등번호</h3>${open
+      ? `<div class="row"><input type="number" min="1" max="99" value="${p.sn}" data-chg="setnum" data-id="${p.id}" style="width:90px"><small>이적시장 기간에만 변경 가능합니다. 다른 선수가 쓰는 번호는 서로 맞바꿉니다.</small></div>`
+      : `<b>#${p.sn}</b> <small>시즌이 시작되어 변경할 수 없습니다.</small>`}</div>`;
+    [0, 1, 2, 3].forEach(g => {
+      if (g === 3 && p.p !== 0) return;
+      h += `<div class="card"><h3>${G.GROUP_NAME[g]}</h3>`;
+      G.ATTRS.forEach((n, i) => {
+        if (G.ATTR_GROUP[i] !== g) return;
+        const v = p.at[i];
+        h += `<div class="attr"><span>${n}</span><div class="bar"><i style="width:${v * 5}%"></i></div><span class="v ${attrCls(v)}">${Math.round(v)}</span></div>`;
+      });
+      h += `</div>`;
+    });
+    h += `<div class="card"><h3>성향 (스태프 관찰)</h3><div class="kv">
+      <div>부상 <b>${tendency(p.ip, 6, 14, '튼튼한 편', '부상이 잦은 편', '보통')}</b></div>
+      <div>큰 경기 <b>${tendency(p.bm, 7, 14, '긴장하는 편', '큰 경기에 강함', '보통')}</b></div>
+      <div>성장 속도 <b>${tendency(p.dv, 7, 14, '더딘 편', '빠른 편', '보통')}</b></div>
+      <div>프로의식 <b>${tendency(p.pr, 7, 14, '낮은 편', '높은 편', '보통')}</b></div></div></div>`;
+    h += `<div class="card"><h3>개인 집중 훈련</h3><select data-chg="focus" data-id="${p.id}"><option value="-1">지정 안 함</option>${G.ATTRS.map((n, i) => (p.p !== 0 && i >= 15) || (p.p === 0 && i < 15 && !G.KEY[0].includes(i) && G.ATTR_GROUP[i] !== 2 && i !== 10) ? '' : `<option value="${i}" ${p.ft === i ? 'selected' : ''}>${n}</option>`).join('')}</select><small>선택한 능력치의 성장 속도가 빨라집니다.</small></div>`;
+    h += `<div class="pad">${open && !p.loan ? `<button class="btn danger full" data-act="release" data-id="${p.id}">선수 방출</button>` : `<small>선수 방출·이적은 이적시장 기간에만 가능합니다.</small>`}</div>`;
+    return h;
+  }
+
+  /* ---------- 전술 ---------- */
+  function viewTactics() {
+    const w = W(), t = T();
+    const subs = [['form', '포메이션'], ['team', '팀 전술'], ['indiv', '개인 전술'], ['sp', '세트피스']];
+    let h = `<div class="tabs">${subs.map(([k, n]) => `<button class="${S.tsub === k ? 'on' : ''}" data-act="tsub" data-k="${k}">${n}</button>`).join('')}</div>`;
+    const lu = G.currentLineup(t, true);
+    if (S.tsub === 'form') {
+      h += `<div class="card"><h3>포메이션</h3><div class="row" style="flex-wrap:wrap">${G.FORMATION_LIST.map(f => `<button class="btn sm ${t.form === f ? 'blue' : ''}" data-act="form" data-f="${f}">${f}</button>`).join('')}</div></div>`;
+      h += `<div class="card">${seg('포메이션 성향', t.tac.tf, G.TF_LABEL, 'data-act="tac" data-k="tf"')}</div>`;
+      const R = G._debug.makeSide(t, lu, true, true).R;
+      h += `<div class="card"><h3>팀 능력 (선발 기준)</h3><div class="kv"><div>공격 <b>${R.A.toFixed(1)}</b></div><div>중원 <b>${R.M.toFixed(1)}</b></div><div>수비 <b>${R.D.toFixed(1)}</b></div><div>골키퍼 <b>${R.G.toFixed(1)}</b></div></div><small>전술 숙련도 ${Math.round(t.coh)} (전술을 자주 바꾸면 낮아지고, 전술 훈련으로 오릅니다)</small></div>`;
+      const slots = G.slotsFor(t.form);
+      h += `<div class="card"><div class="row sp"><h3 style="margin:0">선발 라인업</h3><button class="btn sm" data-act="autolu">자동 선발</button></div>`;
+      const all = t.pl.map(id => w.P[id]);
+      slots.forEach((s, i) => {
+        const opts = all.slice().sort((a, b) => G.caAs(b, s.pos) - G.caAs(a, s.pos)).map(p => `<option value="${p.id}" ${p.id === lu[i] ? 'selected' : ''} ${p.inj ? 'disabled' : ''}>#${p.sn} ${esc(p.n)} · ${POS[p.p]} · 체력 ${Math.round(p.cd)}%${p.inj ? ' 🚑' : ''}</option>`).join('');
+        h += `<div class="row" style="margin:6px 0"><span class="badge p-${POS[s.pos]}" style="width:42px">${POS[s.pos]}</span><select data-chg="slot" data-i="${i}">${opts}</select></div>`;
+      });
+      h += `</div>`;
+    } else if (S.tsub === 'team') {
+      h += `<div class="card">${G.TACTIC_DEFS.map(d => seg(d.n, t.tac[d.k], d.l, `data-act="tac" data-k="${d.k}"`)).join('')}</div>`;
+      h += `<div class="infobox">템포·압박이 높으면 공격 기회가 늘지만 체력 소모와 부상 위험이 커집니다. 높은 수비 라인은 직접 플레이하는 상대에게 뒷공간을 내줄 수 있습니다.</div>`;
+    } else if (S.tsub === 'indiv') {
+      h += `<div class="pad"><small>선발 선수별 세부 지시 (전진성·슈팅 빈도·패스 위험도)</small></div>`;
+      const slots = G.slotsFor(t.form);
+      lu.forEach((id, i) => {
+        const p = w.P[id]; const pt = t.pt[id] || { adv: 3, shoot: 3, risk: 3 };
+        h += `<div class="card"><div class="row">${posB(slots[i].pos)}<b>#${p.sn} ${esc(p.n)}</b></div><div class="kv" style="margin-top:8px">${G.PT_DEFS.map(d => `<div><small>${d.n}</small><select data-chg="pt" data-id="${id}" data-k="${d.k}">${selOpts(d.l, pt[d.k])}</select></div>`).join('')}</div></div>`;
+      });
+    } else {
+      h += `<div class="card">${G.SP_DEFS.map(d => seg(d.n, t.tac[d.k], d.l, `data-act="tac" data-k="${d.k}"`)).join('')}</div>`;
+      h += `<div class="infobox">세트피스 결과는 선수들의 헤딩·세트피스 능력과 상대 수비 능력에 좌우됩니다. 세트피스 훈련으로 능력치를 올리세요.</div>`;
+    }
+    return h;
+  }
+
+  /* ---------- 훈련 ---------- */
+  function viewTrain() {
+    const w = W(), u = w.u, t = T(), tr = u.train;
+    const opt = v => G.TRAIN.map((c, i) => `<option value="${i}" ${i === v ? 'selected' : ''}>${c.k}</option>`).join('');
+    let h = `<div class="card"><h3>주간 훈련 계획</h3>
+      <div class="seg"><div class="segh"><span>훈련 1</span></div><select data-chg="trA">${opt(tr.a)}</select><small>${G.TRAIN[tr.a].d}</small></div>
+      <div class="seg"><div class="segh"><span>훈련 2</span></div><select data-chg="trB">${opt(tr.b)}</select><small>${G.TRAIN[tr.b].d}</small></div>
+      ${seg('훈련 강도', tr.i, G.INT_LABEL, 'data-act="trI"')}</div>`;
+    const hasGK = tr.a === 2 || tr.b === 2;
+    if (!hasGK) h += `<div class="warnbox">골키퍼 훈련이 없어 GK의 성장이 더딥니다.</div>`;
+    if (tr.i >= 4) h += `<div class="warnbox">강도가 높아 성장은 빠르지만 피로 누적과 부상 위험이 커집니다. 컨디션을 확인하세요.</div>`;
+    const avg = t.pl.reduce((a, id) => a + w.P[id].cd, 0) / t.pl.length;
+    h += `<div class="card"><h3>선수단 컨디션</h3><div class="bar ${barCls(avg)}"><i style="width:${avg}%"></i></div><small>평균 ${Math.round(avg)}% · 부상 ${t.pl.filter(id => w.P[id].inj).length}명 · 전술 숙련도 ${Math.round(t.coh)}</small></div>`;
+    h += `<div class="card"><h3>지난 주 훈련 결과</h3><div class="log">${u.chg.length ? u.chg.slice(0, 15).map(c => `<div>${esc(c)}</div>`).join('') : '<small>아직 결과가 없습니다. 주를 진행하면 능력치 변화가 표시됩니다.</small>'}</div></div>`;
+    h += `<div class="infobox">나이가 어리고 성장 속도·잠재력 여유가 클수록 훈련 효과가 큽니다. 포지션과 맞지 않는 훈련은 효과가 줄어듭니다.</div>`;
+    return h;
+  }
+
+  /* ---------- 스카우팅 ---------- */
+  function playerCard(p, opts) {
+    const w = W(); const e = w.u.evals[p.id];
+    const where = p.t >= 0 ? esc(w.teams[p.t].name) : '무소속 · ' + (G.CONTINENTS.find(c => c.id === p.c) || { name: '' }).name;
+    const price = p.t < 0 ? G.r1(G.valueOf(p) * 0.5) : G.r1(G.valueOf(p) * 1.2);
+    let h = `<div class="card"><div class="row sp"><div class="row" data-act="oview" data-id="${p.id}" style="cursor:pointer">${posB(p.p)}<div><b>${esc(p.n)} ›</b><br><small>${p.a}세 · ${esc(p.nat)} · ${where}</small></div></div></div>`;
+    h += `<div style="margin-top:8px">${e ? evBadge(e, p) : '<small>⚪ 미평가 — 판단 시도로 현재/잠재 능력을 평가하세요.</small>'}</div>`;
+    h += `<div class="row" style="margin-top:10px"><button class="btn sm blue grow" data-act="judge" data-id="${p.id}">🔍 판단 (${w.u.att.j}회)</button><button class="btn sm grow" ${G.negBlock(p.id) ? 'disabled' : ''} data-act="neg" data-id="${p.id}">✍️ 이적 협상</button><button class="btn sm grow" data-act="loan" data-id="${p.id}" ${G.loanBlock(p.id) ? 'disabled' : ''}>임대</button></div>${G.negBlock(p.id) && p.t < 0 ? `<small class="warn-t">${esc(G.negBlock(p.id))}</small>` : ''}</div>`;
+    return h;
+  }
+  function viewScout() {
+    const w = W(), u = w.u, t = T();
+    let h = `<div class="card"><div class="kv"><div>탐색 능력<br><b style="font-size:18px">${t.sS}</b>/10</div><div>판단 능력<br><b style="font-size:18px">${t.sJ}</b>/10</div><div>탐색 시도<br><b>${u.att.s}회 남음</b></div><div>판단 시도<br><b>${u.att.j}회 남음</b></div></div>
+      <small>종합 정확도 ${Math.sqrt(t.sS * t.sJ).toFixed(1)} · 탐색·판단이 둘 다 높을수록 평가가 정확합니다. 시도 횟수는 매주 초기화됩니다.</small></div>`;
+    const subs = [['find', '탐색 (대륙)'], ['judge', '판단 (타 팀)'], ['watch', '관찰 목록']];
+    h += `<div class="tabs">${subs.map(([k, n]) => `<button class="${S.scoutSub === k ? 'on' : ''}" data-act="ssc" data-k="${k}">${n}</button>`).join('')}</div>`;
+    if (S.scoutSub === 'find') {
+      h += `<div class="card"><h3>대륙을 지정해 15~21세 유망주 탐색 (1회 2명)</h3><div class="row" style="flex-wrap:wrap">${G.CONTINENTS.map(c => `<button class="btn sm" data-act="search" data-c="${c.id}" ${u.att.s <= 0 ? 'disabled' : ''}>${c.name}</button>`).join('')}</div></div>`;
+      if (S.lastSearch.length) { h += `<div class="pad"><small>방금 발견한 선수</small></div>`; S.lastSearch.forEach(id => { if (w.P[id]) h += playerCard(w.P[id]); }); }
+    } else if (S.scoutSub === 'judge') {
+      const c = S.sc.c, tier = S.sc.t;
+      const tms = w.lg[c][tier].teams.filter(id => id !== t.id);
+      if (S.sc.team == null || !tms.includes(S.sc.team)) S.sc.team = tms[0];
+      h += `<div class="card"><h3>다른 팀의 선수를 지정해 평가 (전 연령)</h3><div class="row"><select data-chg="scC">${G.COUNTRIES.map(x => `<option value="${x.id}" ${x.id === c ? 'selected' : ''}>${x.name}</option>`).join('')}</select><select data-chg="scT">${[0, 1, 2, 3].map(x => `<option value="${x}" ${x === tier ? 'selected' : ''}>${x + 1}부</option>`).join('')}</select></div>
+        <select style="margin-top:8px" data-chg="scTeam">${tms.map(id => `<option value="${id}" ${id === S.sc.team ? 'selected' : ''}>${esc(w.teams[id].name)}</option>`).join('')}</select></div>`;
+      const pl = w.teams[S.sc.team].pl.map(id => w.P[id]).sort((a, b) => (a.a - b.a));
+      pl.forEach(p => { h += playerCard(p); });
+    } else {
+      const ids = u.seen.filter(id => w.P[id] && w.P[id].t !== t.id);
+      if (!ids.length) h += `<div class="pad"><small>아직 관찰 중인 선수가 없습니다. 탐색이나 판단으로 선수를 추가하세요.</small></div>`;
+      ids.slice().reverse().slice(0, 40).forEach(id => { h += playerCard(w.P[id]); });
+    }
+    return h;
+  }
+
+  /* ---------- 순위 ---------- */
+  function viewTable() {
+    const w = W(), t = T();
+    const subs = [['table', '순위표'], ['sched', '내 일정'], ['top', '득점왕'], ['cl', '마스터스컵']];
+    let h = `<div class="tabs">${subs.map(([k, n]) => `<button class="${S.tabsub === k ? 'on' : ''}" data-act="tsb" data-k="${k}">${n}</button>`).join('')}</div>`;
+    const c = G.COUNTRIES.find(x => x.id === S.tc);
+    const L = w.lg[S.tc][S.tt];
+    if (S.tabsub !== 'sched' && S.tabsub !== 'cl') h += `<div class="card"><div class="row"><select data-chg="tc">${G.COUNTRIES.map(x => `<option value="${x.id}" ${x.id === S.tc ? 'selected' : ''}>${x.name}</option>`).join('')}</select><select data-chg="tt">${[0, 1, 2, 3].map(x => `<option value="${x}" ${x === S.tt ? 'selected' : ''}>${x + 1}부</option>`).join('')}</select></div></div>`;
+    if (S.tabsub === 'cl') return h + viewCL();
+    if (S.tabsub === 'table') {
+      const tb = G.sortedTable(L), N = tb.length;
+      const up = S.tt > 0 ? c.ud[S.tt - 1] : 0, dn = S.tt < 3 ? c.ud[S.tt] : 0;
+      h += `<div class="card" style="padding:6px"><table class="tbl"><tr><th>#</th><th class="l">팀</th><th>경기</th><th>승</th><th>무</th><th>패</th><th>득실</th><th>승점</th></tr>`;
+      tb.forEach((id, i) => { const r = L.tbl[id]; h += `<tr class="${id === t.id ? 'me' : ''} ${i < up ? 'up' : ''} ${i >= N - dn ? 'dn' : ''}"><td>${i + 1}</td><td class="l">${esc(w.teams[id].name)}</td><td>${r.p}</td><td>${r.w}</td><td>${r.d}</td><td>${r.l}</td><td>${r.gf - r.ga}</td><td><b>${r.pts}</b></td></tr>`; });
+      h += `</table></div><div class="pad"><small>초록: 승격권 · 빨강: 강등권 (직행 승강, ${up ? '승격 ' + up + '팀' : ''}${up && dn ? ' / ' : ''}${dn ? '강등 ' + dn + '팀' : ''})</small></div>`;
+    } else if (S.tabsub === 'top') {
+      const top = [];
+      L.teams.forEach(id => w.teams[id].pl.forEach(pid => { const p = w.P[pid]; if (p.g > 0) top.push({ n: p.n, t: w.teams[id].name, g: p.g, a: p.ap }); }));
+      top.sort((a, b) => b.g - a.g);
+      h += `<div class="card"><table class="tbl"><tr><th>#</th><th class="l">선수</th><th class="l">팀</th><th>골</th></tr>${top.slice(0, 15).map((s, i) => `<tr><td>${i + 1}</td><td class="l">${esc(s.n)}</td><td class="l"><small>${esc(s.t)}</small></td><td><b>${s.g}</b></td></tr>`).join('') || '<tr><td colspan="4">기록 없음</td></tr>'}</table></div>`;
+    } else {
+      const L2 = w.lg[t.cid][t.tier];
+      h += `<div class="card"><h3>지난 경기</h3>${w.u.hist.length ? w.u.hist.slice().reverse().slice(0, 12).map(x => `<div class="cmp"><span>${x.w}주 ${x.k === 'cl' ? '🏆' : ''}${x.home ? 'H' : 'A'} ${esc(x.opp)}</span><b class="${x.r === '승' ? 'good' : x.r === '패' ? 'bad-t' : ''}">${x.gf}:${x.ga} ${x.r}</b></div>`).join('') : '<small>경기 기록이 없습니다.</small>'}</div>`;
+      let up = ''; for (let wk = w.week; wk < w.week + 6 && wk <= L2.fx.length; wk++) { const m = L2.fx[wk - 1].find(([a, b]) => a === t.id || b === t.id); if (m) { const home = m[0] === t.id, o = w.teams[home ? m[1] : m[0]]; up += `<div class="cmp"><span>${wk}주 ${home ? 'H' : 'A'} ${esc(o.name)}</span><small>전력 ${lvRating(o.lv)}</small></div>`; } }
+      h += `<div class="card"><h3>다음 일정</h3>${up || '<small>남은 경기가 없습니다.</small>'}</div>`;
+    }
+    return h;
+  }
+
+  /* ---------- 다른 팀/무소속 선수 상세 (스카우팅 정확도에 따른 오차 포함) ---------- */
+  function viewOther(p) {
+    const w = W(), t = T();
+    if (p.t === t.id) return viewPlayer(p);
+    const e = w.u.evals[p.id];
+    const Gq = Math.sqrt(t.sS * t.sJ), sp = 30 - 2.67 * (Gq - 1);
+    let sig = (0.4 * sp) / 10;          // 능력치(1~20 척도) 관찰 오차
+    if (e) sig *= 0.5;                  // 판단을 해 본 선수는 더 정확하게 보임
+    const amp = sig * 1.73;
+    const fz = i => { let x = (p.id * 9301 + i * 49297 + w.season * 233) % 233280; x = (x * 9301 + 49297) % 233280; return x / 233280 * 2 - 1; };
+    const rel = sig < 0.4 ? '높음' : sig < 0.8 ? '보통' : '낮음';
+    const where = p.t >= 0 ? esc(w.teams[p.t].name) : '무소속 · ' + ((G.CONTINENTS.find(c => c.id === p.c) || { name: '' }).name);
+    const est = G.twEst(p.id);
+    let h = `<div class="pad"><button class="btn sm" data-act="oback">← 돌아가기</button></div>`;
+    h += `<div class="card"><div class="row sp"><div><h2 style="margin:0">${esc(p.n)}</h2><small>${esc(p.nat)} · ${p.a}세 · ${POS[p.p]} · ${where}</small></div>${p.t >= 0 && p.sn != null ? `<div style="text-align:right"><b style="font-size:26px">#${p.sn}</b><br><small>등번호</small></div>` : ''}</div>
+      <div style="margin-top:8px">${e ? evBadge(e, p) : '<small>⚪ 미평가 — 판단 시도로 현재/잠재 능력 ★를 확인하세요.</small>'}</div>
+      <div class="kv" style="margin-top:8px"><div>예상 몸값 <b>≈ ${M(est)}</b></div><div>예상 연봉 <b>≈ ${M(G.r1(0.05 + 0.08 * est))}</b></div><div>${p.inj ? `상태 <b class="bad-t">🚑 부상 ${p.inj}주</b>` : '상태 <b>정상</b>'}</div><div>정보 신뢰도 <b>${rel}</b></div></div>
+      <small>능력치는 우리 팀의 스카우팅 정확도(${Gq.toFixed(1)})만큼의 오차가 있습니다. ${e ? '판단을 거친 선수라 오차가 줄었습니다.' : '판단을 하면 더 정확해집니다.'}</small></div>`;
+    [0, 1, 2, 3].forEach(g => {
+      if (g === 3 && p.p !== 0) return;
+      h += `<div class="card"><h3>${G.GROUP_NAME[g]}</h3>`;
+      G.ATTRS.forEach((n, i) => {
+        if (G.ATTR_GROUP[i] !== g) return;
+        const v = Math.max(1, Math.min(20, Math.round(p.at[i] + fz(i) * amp)));
+        h += `<div class="attr"><span>${n}</span><div class="bar"><i style="width:${v * 5}%"></i></div><span class="v ${attrCls(v)}">${v}</span></div>`;
+      });
+      h += `</div>`;
+    });
+    h += `<div class="card"><div class="row"><button class="btn blue grow" data-act="judge" data-id="${p.id}">🔍 판단 (${w.u.att.j}회)</button><button class="btn pri grow" ${G.negBlock(p.id) ? 'disabled' : ''} data-act="neg" data-id="${p.id}">💬 이적 협상</button><button class="btn grow" data-act="loan" data-id="${p.id}" ${G.loanBlock(p.id) ? 'disabled' : ''}>임대</button></div><small>${G.loanBlock(p.id) ? '임대 불가: ' + G.loanBlock(p.id) + ' · ' : ''}이적·임대 협상은 이적시장 기간에만 가능합니다.</small></div>`;
+    return h;
+  }
+
+  /* ---------- 이적시장 ---------- */
+  const NEG_STATUS = { pending: '⏳ 답변 대기', counter: '🔁 역제안', open: '📝 제안 필요', rejected: '❌ 거절', done: '✅ 계약 완료', failed: '🚫 결렬', lost: '🚫 무산', cancelled: '⛔ 중단' };
+  function negCard(n) {
+    const w = W(), t = T(), p = w.P[n.pid];
+    if (!p) return '';
+    const where = p.t >= 0 ? esc(w.teams[p.t] ? w.teams[p.t].name : '') : '무소속';
+    const live = n.status === 'pending' || n.status === 'counter' || n.status === 'open' || n.status === 'rejected';
+    let h = `<div class="card" style="margin:8px 14px"><div class="row sp"><div class="row" data-act="oview" data-id="${p.id}" style="cursor:pointer">${posB(p.p)}<div><b>${esc(p.n)} ›</b><br><small>${p.a}세 · ${where}${n.kind === 'loan' ? ' · 임대 협상' : ''}</small></div></div><span class="chip">${NEG_STATUS[n.status]}</span></div>`;
+    if (n.msg) h += `<div class="infobox" style="margin-top:8px">${esc(n.msg)}</div>`;
+    if (n.stage === 'club') {
+      h += `<div class="kv" style="margin-top:6px"><div><small>내 제안</small><br><b>${M(n.offer)}</b></div>${n.status === 'counter' ? `<div><small>구단 역제안</small><br><b class="warn-t">${M(n.counter)}</b></div>` : ''}</div>`;
+      if (n.status === 'counter') h += `<div class="row" style="margin-top:8px"><button class="btn sm pri grow" data-act="tacc" data-id="${n.id}">역제안 수락 (${M(n.counter)})</button></div>`;
+      if (n.status === 'counter' || n.status === 'rejected') h += `<div class="row" style="margin-top:8px"><input type="number" step="0.1" min="0" id="fee_${n.id}" value="${G.r1(Math.max(n.offer * 1.1, n.counter || 0))}"><button class="btn sm blue" style="white-space:nowrap" data-act="tclub" data-id="${n.id}">새 제안</button></div>`;
+    } else if (n.stage === 'player') {
+      const hint = G.r1(0.05 + 0.08 * G.twEst(n.pid));
+      h += `<div class="kv" style="margin-top:6px"><div><small>합의 이적료</small><br><b>${M(n.fee || 0)}</b></div><div><small>시장 평균 연봉(추정)</small><br><b>≈ ${M(hint)}</b></div>${n.offerW != null ? `<div><small>내 제안</small><br><b>${M(n.offerW)} × ${n.offerY}년</b></div>` : ''}${n.status === 'counter' ? `<div><small>선수 요구</small><br><b class="warn-t">${M(n.counterW)} × ${n.dem.y}년</b></div>` : ''}</div>`;
+      if (n.status === 'counter') h += `<div class="row" style="margin-top:8px"><button class="btn sm pri grow" data-act="tpacc" data-id="${n.id}">요구 수락 (연봉 ${M(n.counterW)})</button></div>`;
+      if (n.status === 'open' || n.status === 'counter' || n.status === 'rejected') {
+        const defW = n.status === 'counter' ? n.counterW : (n.offerW != null ? n.offerW * 1.1 : hint);
+        h += `<div class="row" style="margin-top:8px"><input type="number" step="0.05" min="0" id="wage_${n.id}" value="${Math.round((n.status === 'open' ? hint : defW) * 100) / 100}" style="flex:2"><select id="yrs_${n.id}" style="flex:1">${[1, 2, 3, 4, 5].map(y => `<option value="${y}" ${y === (p.a <= 22 ? 5 : p.a <= 28 ? 4 : 2) ? 'selected' : ''}>${y}년</option>`).join('')}</select><button class="btn sm blue" style="white-space:nowrap" data-act="tplayer" data-id="${n.id}">연봉 제안</button></div>
+          <small>총 지출 = 이적료 + 계약금(연봉의 50%) · 현재 예산 ${M(t.bud)}</small>`;
+      }
+    }
+    if (live) h += `<div class="row" style="margin-top:8px"><button class="btn sm danger" data-act="tcancel" data-id="${n.id}">협상 중단</button></div>`;
+    return h + `</div>`;
+  }
+  function recRow(it) {
+    const w = W(), t = T(), p = w.P[it.id];
+    if (!p || p.t === t.id) return '';
+    const lb = G.loanBlock(p.id), nb = G.negBlock(p.id);
+    return `<div class="item" style="flex-wrap:wrap;background:transparent;border-bottom:1px solid var(--line)">
+      <div class="row grow" data-act="oview" data-id="${p.id}" style="cursor:pointer;min-width:60%">${posB(p.p)}<div><b>${esc(p.n)} ›</b> <small>${p.a}세</small><br><small>${p.t >= 0 ? esc(w.teams[p.t].name) : '무소속'} · 몸값 ≈ ${M(G.twEst(p.id))}</small></div></div>
+      <div style="text-align:right"><small>현재</small> ${starsHtml(G.star(it.ca))}<br><small>잠재</small> ${starsHtml(G.star(it.pa))}</div>
+      <div style="width:100%"><span class="chip good">${esc(it.why)}</span></div>
+      <div class="row" style="width:100%;margin-top:6px"><button class="btn sm pri grow" ${nb ? 'disabled' : ''} data-act="neg" data-id="${p.id}">이적 협상</button><button class="btn sm grow" ${lb ? 'disabled' : ''} data-act="loan" data-id="${p.id}">임대</button></div>${G.negBlock(p.id) && p.t < 0 ? `<small class="warn-t">${esc(G.negBlock(p.id))}</small>` : ''}</div>`;
+  }
+  function viewTransfer() {
+    const w = W(), t = T();
+    if (w.state !== 'transfer') {
+      let h = `<div class="card"><h2>💱 이적시장</h2><p>이적시장은 <b>시즌 시작 전(20턴)</b>과 <b>시즌 19번째 경기가 끝난 직후(10턴)</b>, 두 번 열립니다. 선수 영입·임대·매각·방출·등번호 변경은 이 기간에만 가능합니다. 시즌 중 시장에서는 구단들이 선수를 내놓기 꺼려 요구액이 높습니다.</p>
+        <div class="kv"><div>현재 연봉 총액<br><b>${M(G.teamWages(t))}</b></div><div>예산<br><b>${M(t.bud)}</b></div></div></div>`;
+      const fd = Object.keys(w.u.found || {}).map(Number).filter(id => w.P[id] && w.P[id].t < 0);
+      if (fd.length) h += `<div class="card"><h3>스카우터가 발굴한 선수 (${fd.length}명)</h3><small>다음 이적시장이 열리면 우선 협상할 수 있습니다. (에이전트 비용 50% 할인, 연봉 요구 완화)</small></div>`;
+      if (w.u.fin) h += `<div class="card"><h3>지난 시즌 정산</h3><div class="kv"><div>수입<br><b>${M(w.u.fin.income)}</b></div><div>연봉 지출<br><b>${M(w.u.fin.wages)}</b></div></div><b class="${w.u.fin.net >= 0 ? 'good' : 'bad-t'}">순이익 ${M(w.u.fin.net)}</b></div>`;
+      return h;
+    }
+    const tw = w.tw, tr = S.tr;
+    const act = tw.neg.filter(n => ['pending', 'counter', 'open', 'rejected'].includes(n.status));
+    const mid = tw.kind === 'mid';
+    let h = `<div class="card"><h2 style="margin:0">💱 ${mid ? '시즌 중 이적시장' : '시즌 전 이적시장'} ${tw.turn}/${tw.max}턴</h2><small>협상 답변은 다음 턴에 도착합니다 · 연봉 총액 ${M(G.teamWages(t))} · 예산 <b class="good">${M(t.bud)}</b></small>
+      ${mid ? `<div class="warnbox">시즌 중이라 구단들이 선수를 내놓길 꺼려 요구액이 평소보다 높습니다. 이 시장이 닫히면 후반기가 시작됩니다.</div>` : ''}
+      <div class="row" style="margin-top:10px"><button class="btn pri grow" data-act="tnext">⏭ 다음 턴</button><button class="btn grow" data-act="tend">시장 건너뛰기</button></div></div>`;
+    const found = (w.u.seen || []).filter(id => w.P[id] && w.P[id].t < 0);
+    const subs = [['rec', '스카우터 추천'], ['neg', `협상 (${act.length})`], ['find', '선수 찾기'], ['found', `발굴 선수 (${found.length})`], ['inbox', `받은 제안 (${tw.inbox.length})`], ['mine', '내 선수']];
+    h += `<div class="tabs">${subs.map(([k, n]) => `<button class="${tr.sub === k ? 'on' : ''}" data-act="trsub" data-k="${k}">${n}</button>`).join('')}</div>`;
+    if (tr.sub === 'rec') {
+      h += `<div class="pad"><small>스카우터가 우리 팀 수준과 예산에 맞춰 고른 다른 팀 선수 추천 5개 목록입니다. 스카우팅 정확도가 낮으면 추천이 빗나갈 수 있습니다. (5턴마다 갱신)</small></div>`;
+      (tw.recs || []).forEach(r => {
+        h += `<div class="card" style="padding:0;overflow:hidden"><div style="padding:10px 12px"><b>${esc(r.name)}</b><br><small>${esc(r.desc)}</small></div>`;
+        const rows = r.items.map(recRow).join('');
+        h += rows || `<div style="padding:0 12px 12px"><small>조건에 맞는 선수가 없습니다.</small></div>`;
+        h += `</div>`;
+      });
+    } else if (tr.sub === 'neg') {
+      if (tr.negPid != null && w.P[tr.negPid]) {
+        const p = w.P[tr.negPid], est = G.twEst(p.id), loan = S.tr.negKind === 'loan';
+        h += `<div class="card"><h3>${loan ? '새 임대 협상' : '새 이적 협상'}</h3><div class="row">${posB(p.p)}<div><b>${esc(p.n)}</b><br><small>${p.a}세 · ${p.t >= 0 ? esc(w.teams[p.t].name) : '무소속(스카우터 발굴)'}</small></div></div>`;
+        if (loan) h += `<div class="infobox" style="margin-top:8px">임대료는 예상 몸값(약 <b>${M(est)}</b>)의 10~15% 수준입니다. 선수 연봉은 우리 팀이 부담하고, 시즌이 끝나면 원소속팀으로 돌아갑니다. 주전급·고능력 선수는 임대할 수 없습니다.</div>
+          <div class="row" style="margin-top:8px"><input type="number" step="0.1" min="0" id="fee_start" value="${G.r1(est * 0.14)}"><button class="btn pri" style="white-space:nowrap" data-act="tstart" data-id="${p.id}">임대 제안</button></div>`;
+        else if (p.t >= 0) h += `<div class="infobox" style="margin-top:8px">예상 몸값 약 <b>${M(est)}</b> (스카우팅 정확도에 따라 오차가 있습니다). 능력이 좋은 선수일수록 이적료와 연봉이 크게 오릅니다. 구단은 다음 턴에 수락·역제안·거절로 답합니다.</div>
+          <div class="row" style="margin-top:8px"><input type="number" step="0.1" min="0" id="fee_start" value="${G.r1(est * 1.15)}"><button class="btn pri" style="white-space:nowrap" data-act="tstart" data-id="${p.id}">제안 보내기</button></div>`;
+        else h += `<div class="infobox" style="margin-top:8px">스카우터가 발굴한 선수의 우선 협상권입니다. 에이전트 비용(약 ${M(G.r1(G.valueOf(p) * 0.15))})만 내면 선수와 개인 연봉 협상을 시작합니다.</div><div class="row" style="margin-top:8px"><button class="btn pri grow" data-act="tstart" data-id="${p.id}">협상 시작</button></div>`;
+        h += `<div class="row" style="margin-top:8px"><button class="btn sm" data-act="tclose">닫기</button></div></div>`;
+      }
+      if (!act.length && tr.negPid == null) h += `<div class="pad"><small>진행 중인 협상이 없습니다. '스카우터 추천', '선수 찾기', '발굴 선수'에서 협상을 시작하세요. (동시에 6명까지)</small></div>`;
+      act.forEach(n => { h += negCard(n); });
+      const fin = tw.neg.filter(n => !act.includes(n)).slice().reverse();
+      if (fin.length) { h += `<div class="pad"><small>종료된 협상</small></div>`; fin.slice(0, 6).forEach(n => { const p = w.P[n.pid]; h += `<div class="card" style="margin:6px 14px;padding:8px 12px"><div class="row sp"><span>${p ? esc(p.n) : '?'}</span><span class="chip">${NEG_STATUS[n.status]}</span></div><small>${esc(n.msg || '')}</small></div>`; }); }
+    } else if (tr.sub === 'find') {
+      const tms = w.lg[tr.fc][tr.ft].teams.filter(id => id !== t.id);
+      if (tr.fteam == null || !tms.includes(tr.fteam)) tr.fteam = tms[0];
+      h += `<div class="card"><div class="row"><select data-chg="trFc">${G.COUNTRIES.map(x => `<option value="${x.id}" ${x.id === tr.fc ? 'selected' : ''}>${x.name}</option>`).join('')}</select><select data-chg="trFt">${[0, 1, 2, 3].map(x => `<option value="${x}" ${x === tr.ft ? 'selected' : ''}>${x + 1}부</option>`).join('')}</select></div>
+        <select style="margin-top:8px" data-chg="trFteam">${tms.map(id => `<option value="${id}" ${id === tr.fteam ? 'selected' : ''}>${esc(w.teams[id].name)}</option>`).join('')}</select></div>`;
+      h += `<div class="tabs">${['ALL', 'GK', 'DF', 'MF', 'FW'].map(f => `<button class="${tr.fpos === f ? 'on' : ''}" data-act="tfpos" data-k="${f}">${f === 'ALL' ? '전체' : f}</button>`).join('')}</div>`;
+      let pl = w.teams[tr.fteam].pl.map(id => w.P[id]);
+      if (tr.fpos !== 'ALL') pl = pl.filter(p => POS[p.p] === tr.fpos);
+      pl.sort((a, b) => a.p - b.p || a.a - b.a).forEach(p => { h += playerCard(p); });
+    } else if (tr.sub === 'found') {
+      h += `<div class="pad"><small>스카우팅 탭에서 대륙을 탐색해 발굴한 무소속 유망주입니다. <b>발굴한 뒤 다음 이적시장부터</b> 우선 협상권(에이전트 비용 50% 할인, 연봉 요구 완화)으로 영입할 수 있습니다.</small></div>`;
+      if (!found.length) h += `<div class="pad"><small>발굴한 선수가 없습니다. 스카우팅 탭에서 탐색하세요.</small></div>`;
+      found.slice().reverse().slice(0, 40).forEach(id => { h += playerCard(w.P[id]); });
+    } else if (tr.sub === 'inbox') {
+      if (!tw.inbox.length) h += `<div class="pad"><small>받은 제안이 없습니다. 방출·임대 명단에 올리면 다른 구단이 관심을 보입니다. 명단에 없는 선수에게도 가끔 제안이 옵니다.</small></div>`;
+      tw.inbox.forEach(o => {
+        const p = w.P[o.pid], b = w.teams[o.from]; if (!p) return;
+        const kindTxt = o.kind === 'loan' ? '임대 제안' : (o.listed ? '방출 명단 선수 제안 (몸값보다 낮은 가격)' : '명단에 없던 선수에게 온 관심');
+        h += `<div class="card" style="margin:8px 14px"><div class="row" data-act="oview" data-id="${p.id}" style="cursor:pointer">${posB(p.p)}${numBadge(p)}<div><b>${esc(p.n)} ›</b><br><small>${p.a}세 · 연봉 ${M(G.wageOf(p))}</small></div></div>
+          <div style="margin-top:6px"><span class="chip ${o.kind === 'loan' ? '' : (o.listed ? 'warn-t' : 'good')}">${kindTxt}</span></div>
+          <p><b>${esc(b.name)}</b>이(가) <b class="good">${M(o.fee)}</b>${o.kind === 'loan' ? '의 임대료로 시즌 임대를 제안했습니다. (선수 연봉은 상대 구단 부담, 시즌 후 복귀)' : '에 영입을 제안했습니다.'} <small>(시장 가치 ${M(G.valueOf(p))} · ${o.exp - tw.turn}턴 후 만료)</small></p>
+          <div class="row"><button class="btn sm pri grow" data-act="tsell" data-id="${o.id}">${o.kind === 'loan' ? '임대 수락' : '매각 수락'}</button><button class="btn sm grow" data-act="trej" data-id="${o.id}">거절</button></div></div>`;
+      });
+    } else {
+      h += `<div class="pad"><small>선수 이름을 누르면 능력치를 볼 수 있습니다. <b>방출 명단·임대 명단</b>에 올리면 다른 구단이 관심을 갖고 접촉합니다. 방출 명단 선수는 현재 몸값보다 낮은 가격으로 제안이 옵니다. 등번호는 지금만 바꿀 수 있고, 주전급·고능력 선수는 임대할 수 없습니다.</small></div><div class="list">`;
+      const ll = tw.loanList || [], sl = tw.saleList || [];
+      t.pl.map(id => w.P[id]).sort((a, b) => a.p - b.p || (a.sn || 99) - (b.sn || 99)).forEach(p => {
+        const why = p.loan ? null : G.loanBlock(p.id);
+        const lq = ll.includes(p.id), sq = sl.includes(p.id);
+        h += `<div class="item" style="flex-wrap:wrap">${posB(p.p)}<input type="number" min="1" max="99" value="${p.sn}" data-chg="setnum" data-id="${p.id}" style="width:64px;min-height:36px;padding:4px 6px"><div class="grow" data-act="oview" data-id="${p.id}" style="cursor:pointer"><b>${esc(p.n)} ›</b> <small>${p.a}세</small>${p.loan ? ' <span class="chip warn-t">임대 중</span>' : ''}${sq ? ' <span class="chip warn-t">방출 명단</span>' : ''}${lq ? ' <span class="chip">임대 명단</span>' : ''}<br><small>연봉 ${M(G.wageOf(p))} · 가치 ${M(G.valueOf(p))}${p.loan ? ' · 시즌 후 ' + esc(w.teams[p.loan.from].name) + ' 복귀' : (why ? ' · 임대 불가' : '')}</small></div>
+          ${p.loan ? '' : `<div class="row" style="width:100%;gap:6px">${sq ? `<button class="btn sm grow" data-act="salecancel" data-id="${p.id}">방출 명단 취소</button>` : `<button class="btn sm grow" data-act="sale" data-id="${p.id}">방출 명단</button>`}${lq ? `<button class="btn sm grow" data-act="loancancel" data-id="${p.id}">임대 명단 취소</button>` : `<button class="btn sm grow" data-act="loanout" data-id="${p.id}" ${why ? 'disabled' : ''}>임대 명단</button>`}<button class="btn sm danger" data-act="release" data-id="${p.id}">즉시 방출</button></div>`}</div>`;
+      });
+      h += `</div>`;
+      const outs = (w.u.out || []).filter(id => w.P[id]);
+      if (outs.length) h += `<div class="card"><h3>임대 보낸 선수 (시즌 종료 후 복귀)</h3>` + outs.map(id => `<div class="cmp"><span>${esc(w.P[id].n)}</span><small>${esc(w.teams[w.P[id].t].name)}</small></div>`).join('') + `</div>`;
+    }
+    return h;
+  }
+
+  /* ---------- 유러피언 마스터스컵 ---------- */
+  function viewCL() {
+    const w = W(), cl = w.cl, t = T();
+    if (!cl) return `<div class="card">대회 정보가 없습니다.</div>`;
+    const PH = { lp: '리그 페이즈', po: '플레이오프', r16: '16강', qf: '8강', sf: '4강', final: '결승', done: '종료' };
+    const mine = cl.teams.includes(t.id);
+    const rank = G.clRank();
+    let h = `<div class="card"><h2 style="margin:0">🏆 ${G.CL_NAME}</h2><small>각 리그 1부 상위 4팀(24팀) + 가상 소국 챔피언 12팀 = 36팀 · 현재 단계: <b>${PH[cl.phase]}</b></small>
+      <div class="infobox" style="margin-top:8px">${cl.first ? '첫 시즌이라 지난 성적이 없어, 1부 팀 수준에 비례한 추첨으로 4팀을 정했습니다. 전력이 높은 팀일수록 진출 확률이 높습니다.' : '지난 시즌 각 리그 1부 상위 4팀이 진출했습니다.'} 랜덤 12팀은 가상 팀 30개 중에서 매년 새로 추첨됩니다.</div>
+      <p style="margin:8px 0 0">${mine ? `내 팀: <b class="good">출전 중</b> · ${cl.phase === 'done' ? G.CL_STAGE_NAME[cl.stage[t.id]] : '진행 중'}` : `내 팀: 불참 <small>(내 리그 진출 팀: ${cl.byC[t.cid] ? cl.byC[t.cid].map(id => esc(w.teams[id].name)).join(', ') : '-'})</small>`}</p></div>`;
+    if (mine) {
+      let up = '';
+      Object.keys(cl.fx).map(Number).sort((a, b) => a - b).forEach(wk => { if (wk < w.week) return; cl.fx[wk].forEach(f => { if (f.h === t.id || f.a === t.id) up += `<div class="cmp"><span>${wk}주 ${f.h === t.id ? 'H' : 'A'} ${esc(w.teams[f.h === t.id ? f.a : f.h].name)}</span><small>${ROUND_NAME[f.round]}</small></div>`; }); });
+      h += `<div class="card"><h3>내 마스터스컵 일정</h3>${up || '<small>남은 경기가 없습니다.</small>'}</div>`;
+    }
+    h += `<div class="card" style="padding:6px"><h3 style="padding:6px">리그 페이즈 순위 (8경기)</h3><table class="tbl"><tr><th>#</th><th class="l">팀</th><th>경기</th><th>승</th><th>무</th><th>패</th><th>득실</th><th>승점</th></tr>`;
+    rank.forEach((id, i) => {
+      const r = cl.table[id], tm = w.teams[id];
+      h += `<tr class="${id === t.id ? 'me' : ''} ${i < 8 ? 'up' : ''} ${i >= 24 ? 'dn' : ''}"><td>${i + 1}</td><td class="l">${esc(tm.name)}${tm.cid === 'RND' ? ' <small>🌐</small>' : ''}</td><td>${r.p}</td><td>${r.w}</td><td>${r.d}</td><td>${r.l}</td><td>${r.gf - r.ga}</td><td><b>${r.pts}</b></td></tr>`;
+    });
+    h += `</table><div class="pad"><small>초록: 16강 직행(1~8위) · 무색: 플레이오프(9~24위) · 빨강: 탈락 · 🌐 랜덤 추첨 팀</small></div></div>`;
+    ['po', 'r16', 'qf', 'sf', 'final'].forEach(r => {
+      const ties = cl.ties.filter(x => x.r === r);
+      if (!ties.length) return;
+      h += `<div class="card"><h3>${ROUND_NAME[r]}</h3>`;
+      ties.forEach(x => {
+        const played = x.legs.some(l => l), [ga, gb] = G.tieAgg(x);
+        const A = w.teams[x.a], B = w.teams[x.b];
+        h += `<div class="cmp"><span class="${x.win === x.a ? 'good' : ''}">${esc(A.name)}</span><b>${played ? ga + ' : ' + gb : 'vs'}${x.pen ? ' <small>(승부차기)</small>' : ''}</b><span class="${x.win === x.b ? 'good' : ''}" style="text-align:right">${esc(B.name)}</span></div>`;
+      });
+      h += `</div>`;
+    });
+    if (cl.champion != null) h += `<div class="card"><h2>🏆 우승: ${esc(w.teams[cl.champion].name)}</h2></div>`;
+    return h;
+  }
+
+  /* ---------- 경기 화면 ---------- */
+  function viewPrematch() {
+    const w = W(), t = T(), fx = S.fxs[S.cur];
+    const home = w.teams[fx.h], away = w.teams[fx.a];
+    const luH = G.currentLineup(home, home.id === t.id), luA = G.currentLineup(away, away.id === t.id);
+    const rH = G._debug.makeSide(home, luH, true, false).R, rA = G._debug.makeSide(away, luA, false, false).R;
+    const row = (n, a, b) => `<div class="stat"><span>${a.toFixed(1)}</span><b>${n}</b><span>${b.toFixed(1)}</span></div>`;
+    let h = `<div class="topbar"><div class="row sp"><button class="btn sm" data-act="exitmatch">← 돌아가기</button><b>${w.season}시즌 ${w.week}주차</b><small>${S.cur + 1}/${S.fxs.length}경기</small></div></div>`;
+    h += `<div class="scoreb"><small>${fxLabel(fx)}</small><div class="row sp"><div class="tn" style="color:${teamCol(home.id)}">${esc(home.name)}<br><small>${home.form}</small></div><div class="sub">VS</div><div class="tn" style="color:${teamCol(away.id)}">${esc(away.name)}<br><small>${away.form}</small></div></div></div>`;
+    h += `<div class="card"><h3>양 팀 전력 비교 (선발 기준)</h3>${row('공격', rH.A, rA.A)}${row('중원', rH.M, rA.M)}${row('수비', rH.D, rA.D)}${row('골키퍼', rH.G, rA.G)}</div>`;
+    const lowC = G.currentLineup(t, true).filter(id => w.P[id].cd < 50).length;
+    if (lowC) h += `<div class="card"><div class="warnbox">체력이 낮은 선발이 ${lowC}명입니다. 전술 탭에서 라인업을 확인하거나, 경기 중 교체를 활용하세요.</div></div>`;
+    h += `<div class="card"><div class="row"><button class="btn grow" data-act="gotactics">📋 전술 수정</button></div><div class="row" style="margin-top:8px"><button class="btn pri grow" data-act="kickoff">▶ 킥오프 (2D 보기)</button><button class="btn grow" data-act="instant">⏭ 즉시 결과</button></div></div>`;
+    return h;
+  }
+
+  function lineupOf(s) { const m = S.match; return m.M ? m.M.S[s].lu : m.res.lineups[s]; }
+  function matchDom() {
+    const m = S.match, w = W();
+    const home = w.teams[m.res.teams[0]], away = w.teams[m.res.teams[1]];
+    let toks = '';
+    for (let s = 0; s < 2; s++) for (let i = 0; i < 11; i++) {
+      const pid = lineupOf(s)[i]; const p = w.P[pid]; const sl = m.res.sides[s].slots[i];
+      toks += `<div class="tok ${sl.pos === 0 ? 'gk' : ''}" id="tk${s}_${i}" data-act="tok" data-s="${s}" data-i="${i}" title="${esc(p.n)}"><i style="background:${s === 0 ? m.col[0] : m.col[1]}">${p.sn}</i>${(m.M && s === m.M.userSide) ? '<s class="tst"><u></u></s>' : ''}</div>`;
+    }
+    let h = `<div class="topbar"><div class="row sp"><b>${esc(home.name)} vs ${esc(away.name)}</b><small id="mmin">0'</small></div></div>`;
+    h += `<div class="scoreb"><div class="row sp"><span class="tn" style="color:${m.col[0]}">${esc(home.name)}</span><span class="sc" id="msc">0 : 0</span><span class="tn" style="color:${m.col[1]}">${esc(away.name)}</span></div></div>`;
+    h += `<div class="pitchwrap"><div class="pitch" id="pitch"><div class="box t"></div><div class="box b"></div><div class="ballhl" id="bhl"></div>${toks}<div class="ballc" id="ball">⚽</div></div></div>`;
+    h += `<div class="mctl"><button class="btn sm" data-act="mplay" id="bplay">⏸ 정지</button><button class="btn sm" data-act="mspeed" id="bspd">1x</button><button class="btn sm blue" data-act="mpanel" id="bpanel">📋 전술·교체</button><button class="btn sm" data-act="mskip">⏭ 결과</button></div>`;
+    h += `<div id="mpanel"></div><div class="card"><h3>경기 로그</h3><div class="evlog" id="mlog"></div></div><div id="mend"></div>`;
+    return h;
+  }
+  function tokenPos(res, s, frame) {
+    // 격자(8열 x 12행) 위 22명 배치
+    const side = res.sides[s], w = W();
+    const dB = (s === 0 ? 11 - frame.r : frame.r) / 11; // 이 팀 관점에서 공의 전진도
+    const used = {};
+    const out = [];
+    const poss = frame.s === s;
+    side.slots.forEach((sl, i) => {
+      let y = sl.y + (dB - 0.5) * 0.3 * (sl.pos === 0 ? 0.1 : 1) + (poss && sl.pos >= 2 ? 0.04 : 0) + (sl.pos === 1 ? 0.05 * (side.tac.line - 3) : 0) + 0.02 * (sl.pt.adv - 3);
+      y = Math.max(0.03, Math.min(0.97, y));
+      let x = 0.5 + (sl.x - 0.5) * (1 + 0.07 * (side.tac.width - 3));
+      x = Math.max(0, Math.min(1, x));
+      let c = Math.round((s === 0 ? x : 1 - x) * 7), r = s === 0 ? Math.round((1 - y) * 11) : Math.round(y * 11);
+      out.push({ i, c, r, pos: sl.pos });
+    });
+    return out;
+  }
+  function placeAll(frame) {
+    const m = S.match, res = m.res;
+    const occ = {};
+    const all = [];
+    for (let s = 0; s < 2; s++) tokenPos(res, s, frame).forEach(t => all.push({ s, ...t }));
+    // 공 소유 팀의 가장 가까운 선수가 공 위치로 이동
+    let car = null, bd = 99;
+    all.forEach(t => { if (t.s === frame.s && t.pos !== 0 || (t.s === frame.s && t.i === 0 && frame.r === (frame.s === 0 ? 11 : 0))) { const d = Math.abs(t.c - frame.c) + Math.abs(t.r - frame.r); if (d < bd) { bd = d; car = t; } } });
+    if (car) { car.c = frame.c; car.r = frame.r; car.has = true; }
+    // 충돌 해소
+    all.sort((a, b) => (b.has ? 1 : 0) - (a.has ? 1 : 0));
+    all.forEach(t => {
+      let key = t.c + ',' + t.r;
+      if (occ[key] && !t.has) {
+        let found = false;
+        for (let rad = 1; rad < 3 && !found; rad++) for (let dr = -rad; dr <= rad && !found; dr++) for (let dc = -rad; dc <= rad && !found; dc++) {
+          const c = t.c + dc, r = t.r + dr; if (c < 0 || c > 7 || r < 0 || r > 11) continue;
+          if (!occ[c + ',' + r]) { t.c = c; t.r = r; found = true; }
+        }
+        key = t.c + ',' + t.r;
+      }
+      occ[key] = true;
+    });
+    all.forEach(t => {
+      const el = document.getElementById(`tk${t.s}_${t.i}`); if (!el) return;
+      el.style.left = (t.c * 12.5) + '%'; el.style.top = (t.r * 8.3333) + '%';
+      el.classList.toggle('has', !!t.has);
+    });
+    const b = document.getElementById('ball'), hl = document.getElementById('bhl');
+    if (b) { b.style.left = (frame.c * 12.5) + '%'; b.style.top = (frame.r * 8.3333) + '%'; }
+    if (hl) { hl.style.left = (frame.c * 12.5) + '%'; hl.style.top = (frame.r * 8.3333) + '%'; }
+  }
+  function updateMatchUi() {
+    const m = S.match, res = m.res, fr = res.tr[Math.min(m.idx, res.tr.length - 1)];
+    placeAll(fr);
+    const w = W();
+    for (let s = 0; s < 2; s++) lineupOf(s).forEach((pid, i) => {
+      const el = document.getElementById(`tk${s}_${i}`); if (!el || !w.P[pid]) return;
+      el.title = w.P[pid].n; const ic = el.querySelector('i'); if (ic) ic.textContent = w.P[pid].sn;
+      if (m.M && s === m.M.userSide) { const u2 = el.querySelector('.tst u'); if (u2) { const v = m.M.stam(s, i); u2.style.width = v + '%'; u2.style.background = v < 40 ? '#ef5b5b' : v < 65 ? '#f0b429' : '#3ecf8e'; } }
+    });
+    const min = fr.m;
+    const goals = [0, 0];
+    res.scorers.forEach(sc => { if (sc.m <= min) goals[sc.s]++; });
+    const el = id => document.getElementById(id);
+    if (el('msc')) el('msc').textContent = `${goals[0]} : ${goals[1]}`;
+    if (el('mmin')) el('mmin').textContent = (min > 90 ? '90+' + (min - 90) : min) + "'";
+    const ev = res.ev.filter(e => e.m <= min);
+    if (el('mlog')) { el('mlog').innerHTML = ev.slice().reverse().map(e => `<div class="${e.type}">${esc(e.text)}</div>`).join('') || '<div><small>킥오프!</small></div>'; }
+    if (fr.tag === 'ht' && !m.htShown) { m.htShown = true; pauseMatch(); toast('하프타임 — 전술과 교체를 점검하세요'); if (m.M && !m.M.done) openPanel('tac'); }
+  }
+  function pauseMatch() { const m = S.match; if (!m) return; m.playing = false; clearTimeout(m.timer); const b = document.getElementById('bplay'); if (b) b.textContent = '▶ 재개'; }
+  function resumeMatch() {
+    const m = S.match; if (!m || m.done) return;
+    const p = document.getElementById('mpanel'); if (p) p.innerHTML = '';
+    m.playing = true; const b = document.getElementById('bplay'); if (b) b.textContent = '⏸ 정지';
+    tick();
+  }
+  function tick() {
+    const m = S.match; if (!m || !m.playing) return;
+    if (m.M) {
+      if (m.M.done) { endMatch(); return; }
+      m.M.step(); m.idx = m.res.tr.length - 1;
+    } else {
+      if (m.idx >= m.res.tr.length - 1) { endMatch(); return; }
+      m.idx++;
+    }
+    updateMatchUi();
+    if (!m.playing) return;
+    const fr = m.res.tr[m.idx];
+    const delay = (fr.tag === 'goal' ? 1400 : fr.tag === 'shot' || fr.tag === 'corner' || fr.tag === 'card' ? 800 : 380) / m.speed;
+    m.timer = setTimeout(tick, delay);
+  }
+  function endMatch() {
+    const m = S.match; if (!m) return;
+    pauseMatch();
+    if (m.M) {
+      const us = m.M.userSide; if (us >= 0) m.M.S[us].manual = false; // 결과 바로 보기: 남은 교체는 자동
+      while (!m.M.done) m.M.step();
+      m.res = m.M.result();
+    }
+    m.idx = m.res.tr.length - 1; m.done = true; updateMatchUi();
+    const pn = document.getElementById('mpanel'); if (pn) pn.innerHTML = '';
+    const res = m.res, w = W();
+    const st = res.st, tot = st.poss[0] + st.poss[1];
+    const row = (n, a, b) => `<div class="stat"><span>${a}</span><b>${n}</b><span>${b}</span></div>`;
+    const sc = res.scorers.map(s => `<div class="cmp"><span>${s.m > 90 ? '90+' + (s.m - 90) : s.m}' ${esc(w.P[s.id] ? w.P[s.id].n : '?')}${s.kind ? ' (' + s.kind + ')' : ''}</span><small>${esc(w.teams[res.teams[s.s]].name)}</small></div>`).join('');
+    const us = res.userSide;
+    const sb = us >= 0 ? res.subs.filter(x => x.s === us).map(x => `<div class="cmp"><span>${x.m}' ${esc(w.P[x.off].n)} → ${esc(w.P[x.on].n)}</span></div>`).join('') : '';
+    document.getElementById('mend').innerHTML = `<div class="card"><h2>경기 종료 ${res.score[0]} : ${res.score[1]}</h2>${row('점유율', Math.round(st.poss[0] / tot * 100) + '%', Math.round(st.poss[1] / tot * 100) + '%')}${row('슈팅', st.shots[0], st.shots[1])}${row('유효슈팅', st.sot[0], st.sot[1])}${row('코너킥', st.corners[0], st.corners[1])}${row('파울', st.fouls[0], st.fouls[1])}${row('경고', st.yc[0], st.yc[1])}${row('퇴장', st.rc[0], st.rc[1])}${sc ? '<h3 style="margin-top:10px">득점자</h3>' + sc : ''}${sb ? '<h3 style="margin-top:10px">우리 팀 교체</h3>' + sb : ''}<button class="btn pri full" style="margin-top:12px" data-act="finishmatch">✔ 결과 반영하고 다음으로</button></div>`;
+    const ctl = document.querySelector('.mctl'); if (ctl) ctl.style.display = 'none';
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  function startMatch(play) {
+    const w = W(), fx = S.fxs[S.cur];
+    const home = w.teams[fx.h], away = w.teams[fx.a];
+    let M = null, res;
+    if (play) { M = G.createMatch(home, away, { trace: true, manual: true, kind: fx.kind }); res = M.res; }
+    else res = G.simulateMatch(home, away, { trace: true, kind: fx.kind });
+    const c0 = teamCol(home.id); let c1 = teamCol(away.id);
+    if (Math.abs(((home.id * 47) % 360) - ((away.id * 47) % 360)) < 60) c1 = `hsl(${((away.id * 47) + 180) % 360},62%,46%)`;
+    S.match = { M, res, idx: 0, speed: 1, playing: true, timer: 0, col: [c0, c1], htShown: false, done: false, ptab: 'tac', selOff: null };
+    S.screen = 'match'; $('#app').innerHTML = matchDom();
+    if (play) { updateMatchUi(); S.match.timer = setTimeout(tick, 700); }
+    else { endMatch(); }
+  }
+
+  /* ---------- 경기 중 전술/교체 패널 ---------- */
+  function openPanel(tab) {
+    const m = S.match; if (!m || !m.M || m.M.done) return;
+    pauseMatch(); if (tab) m.ptab = tab;
+    renderPanel();
+    const el = document.getElementById('mpanel'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+  function renderPanel() {
+    const m = S.match, el = document.getElementById('mpanel'); if (!el || !m || !m.M) return;
+    const M = m.M, us = M.userSide;
+    if (M.done || us < 0) { el.innerHTML = ''; return; }
+    const sd = M.S[us], w = W(), POSN = G.POS;
+    const tabs = [['tac', '팀 전술'], ['pt', '개인 전술'], ['sub', '교체']];
+    let h = `<div class="card"><div class="row sp"><b>${M.minute}분 · 경기 중 조정</b><small>교체 ${sd.subs}/${sd.maxSubs}</small></div>`;
+    h += `<div class="tabs" style="padding:8px 0 0">${tabs.map(([k, n]) => `<button class="${m.ptab === k ? 'on' : ''}" data-act="mtab" data-k="${k}">${n}</button>`).join('')}</div>`;
+    if (m.ptab === 'tac') {
+      h += seg('경기 성향', sd.tac.tf || 3, G.TF_LABEL, 'data-act="mtac" data-k="tf"');
+      h += G.TACTIC_DEFS.map(d => seg(d.n, sd.tac[d.k], d.l, `data-act="mtac" data-k="${d.k}"`)).join('');
+      h += `<small>바꾼 전술은 즉시 적용되며 경기 후에도 유지됩니다. (전술을 바꾸면 팀 숙련도가 떨어집니다)</small>`;
+    } else if (m.ptab === 'pt') {
+      sd.lu.forEach((id, i) => {
+        const p = w.P[id]; const pt = sd.ptMap[id] || { adv: 3, shoot: 3, risk: 3 };
+        h += `<div style="margin-top:10px"><div class="row">${posB(sd.slots[i].pos)}<b>#${p.sn} ${esc(p.n)}</b></div><div class="kv" style="margin-top:6px">${G.PT_DEFS.map(d => `<div><small>${d.n}</small><select data-chg="mpt" data-id="${id}" data-k="${d.k}">${selOpts(d.l, pt[d.k])}</select></div>`).join('')}</div></div>`;
+      });
+    } else {
+      const sel = m.selOff;
+      h += `<div class="infobox" style="margin-top:8px">1) 교체로 나갈 선수를 누르고 2) 들어올 선수를 누르세요. 한 번 교체된 선수는 다시 뛸 수 없습니다.</div>`;
+      h += `<h3>그라운드 위 선수 (번호는 등번호)</h3><div class="list" style="border-radius:10px;overflow:hidden">`;
+      sd.lu.forEach((id, i) => {
+        const p = w.P[id];
+        const played = M.minute - sd.entry[i];
+        const live = M.stam(us, i);
+        const tired = played / (0.8 + p.at[14] / 20);
+        h += `<div class="item ${sel === i ? 'on' : ''}" data-act="msel" data-i="${i}">${posB(sd.slots[i].pos)}<div class="grow"><b>#${p.sn} ${esc(p.n)}</b><div class="bar ${barCls(live)}" style="margin:4px 0"><i style="width:${Math.round(live)}%"></i></div><small>체력 ${Math.round(live)}% · 지구력 ${Math.round(p.at[14])} · ${played}분 출전</small></div>${tired > 75 ? '<span class="chip warn-t">피로</span>' : ''}</div>`;
+      });
+      h += `</div>`;
+      const pos = sel != null ? sd.slots[sel].pos : null;
+      const bench = M.bench(us).sort((a, b) => pos != null ? G.caAs(b, pos) - G.caAs(a, pos) : (a.p - b.p) || (b.ca - a.ca));
+      h += `<h3 style="margin-top:12px">교체 후보${sel != null ? ` → #${w.P[sd.lu[sel]].sn} 자리 (${POSN[pos]})` : ''}</h3>`;
+      if (sd.subs >= sd.maxSubs) h += `<div class="warnbox">교체를 모두 사용했습니다.</div>`;
+      else if (!bench.length) h += `<div class="warnbox">교체 가능한 선수가 없습니다.</div>`;
+      else {
+        h += `<div class="list" style="border-radius:10px;overflow:hidden">`;
+        bench.forEach(p => {
+          const fit = pos != null ? (p.p === pos ? '' : '<span class="chip warn-t">포지션 불일치</span>') : '';
+          h += `<div class="item ${sel == null ? 'dis' : ''}" data-act="msub" data-id="${p.id}">${posB(p.p)}<div class="grow"><b>#${p.sn} ${esc(p.n)}</b> <small>${p.a}세</small><br><small>체력 ${Math.round(p.cd)}%</small></div>${fit}</div>`;
+        });
+        h += `</div>`;
+      }
+    }
+    h += `<button class="btn pri full" style="margin-top:12px" data-act="mplay">▶ 경기 재개</button></div>`;
+    el.innerHTML = h;
+  }
+
+  /* ---------- 렌더링 ---------- */
+  function render() {
+    const app = $('#app');
+    if (S.screen === 'start') { app.innerHTML = viewStart(); return; }
+    if (S.screen === 'prematch') { app.innerHTML = viewPrematch(); return; }
+    if (S.screen === 'match') return;
+    let c = '';
+    if (S.view != null && W().P[S.view]) c = viewOther(W().P[S.view]);
+    else if (S.tab === 'home') c = viewHome();
+    else if (S.tab === 'squad') c = viewSquad();
+    else if (S.tab === 'tactics') c = viewTactics();
+    else if (S.tab === 'train') c = viewTrain();
+    else if (S.tab === 'scout') c = viewScout();
+    else if (S.tab === 'transfer') c = viewTransfer();
+    else if (S.tab === 'table') c = viewTable();
+    app.innerHTML = shell(c);
+  }
+  function rerender() { const y = window.scrollY; render(); window.scrollTo(0, y); }
+
+  function doSave(showToast) { G.save().then(ok => { if (showToast) toast(ok ? '저장되었습니다.' : '저장에 실패했습니다.'); }); }
+
+  /* ---------- 이벤트 ---------- */
+  document.addEventListener('click', e => {
+    const el = e.target.closest('[data-act]'); if (!el) return;
+    const a = el.dataset.act, w = G.world(), d = el.dataset;
+    switch (a) {
+      case 'pickteam': S.startSel = +d.id; rerender(); break;
+      case 'startgame': {
+        if (S.startSel == null) return;
+        G.startGame(($('#nm') ? $('#nm').value : S.name) || '감독', S.startSel);
+        const t = T(); S.tc = t.cid; S.tt = t.tier; S.sc = { c: t.cid, t: Math.min(3, t.tier), team: null };
+        S.screen = 'game'; S.tab = 'home'; window.scrollTo(0, 0); render(); doSave(false); break;
+      }
+      case 'loadgame': G.load().then(ok => { if (ok) { const t = T(); S.tc = t.cid; S.tt = t.tier; S.sc = { c: t.cid, t: t.tier, team: null }; S.screen = 'game'; S.tab = 'home'; render(); toast('불러왔습니다.'); } else toast('불러오기 실패'); }); break;
+      case 'tab': S.tab = d.k; S.sel = null; S.view = null; window.scrollTo(0, 0); render(); break;
+      case 'ssub': S.ssub = d.k; rerender(); break;
+      case 'player': S.sel = +d.id; window.scrollTo(0, 0); render(); break;
+      case 'back': S.sel = null; S.view = null; render(); break;
+      case 'oview': S.view = +d.id; window.scrollTo(0, 0); render(); break;
+      case 'oback': S.view = null; render(); break;
+      case 'release': {
+        if (!confirm('이 선수를 방출할까요? (되돌릴 수 없습니다)')) return;
+        const r = G.release(+d.id); if (r.err) toast(r.err); else { S.sel = null; toast('방출했습니다.'); render(); } break;
+      }
+      case 'tsub': S.tsub = d.k; rerender(); break;
+      case 'form': { const t = T(); t.form = d.f; t.lu = null; rerender(); break; }
+      case 'autolu': { const t = T(); t.lu = G.autoLineup(t); t.luF = t.form; rerender(); toast('자동 선발을 적용했습니다.'); break; }
+      case 'tac': { const t = T(); t.tac[d.k] = +d.v; rerender(); break; }
+      case 'trI': { w.u.train.i = +d.v; rerender(); break; }
+      case 'ssc': S.scoutSub = d.k; rerender(); break;
+      case 'search': {
+        const r = G.doSearch(d.c);
+        if (r.err) toast(r.err); else { S.lastSearch = r.ids; toast('2명의 선수를 발견했습니다.'); }
+        rerender(); break;
+      }
+      case 'judge': { const r = G.doJudge(+d.id); if (r.err) toast(r.err); else toast('판단 완료'); rerender(); break; }
+      case 'buy': {
+        const p = w.P[+d.id]; const price = p.t < 0 ? G.r1(G.valueOf(p) * 0.5) : G.r1(G.valueOf(p) * 1.2);
+        if (!confirm(`${p.n} 영입 (${price}M)?`)) return;
+        const r = G.buy(+d.id); if (r.err) toast(r.err); else { toast('영입 완료!'); } rerender(); break;
+      }
+      case 'neg': { if (w.state !== 'transfer') { toast('이적시장 기간에만 협상할 수 있습니다.'); break; } S.tab = 'transfer'; S.view = null; S.tr.sub = 'neg'; S.tr.negPid = +d.id; S.tr.negKind = 'buy'; window.scrollTo(0, 0); render(); break; }
+      case 'loan': { if (w.state !== 'transfer') { toast('이적시장 기간에만 협상할 수 있습니다.'); break; } S.tab = 'transfer'; S.view = null; S.tr.sub = 'neg'; S.tr.negPid = +d.id; S.tr.negKind = 'loan'; window.scrollTo(0, 0); render(); break; }
+      case 'loanout': { const r = G.twLoanOut(+d.id); toast(r.err || '임대 명단에 올렸습니다. 다음 턴부터 제안이 올 수 있습니다.'); rerender(); break; }
+      case 'loancancel': G.twLoanCancel(+d.id); rerender(); break;
+      case 'sale': { const r = G.twSaleList(+d.id); toast(r.err || '방출 명단에 올렸습니다. 다른 구단이 몸값보다 낮은 가격으로 접촉해 올 수 있습니다.'); rerender(); break; }
+      case 'salecancel': G.twSaleCancel(+d.id); rerender(); break;
+      case 'tclose': S.tr.negPid = null; rerender(); break;
+      case 'trsub': S.tr.sub = d.k; rerender(); break;
+      case 'tfpos': S.tr.fpos = d.k; rerender(); break;
+      case 'tstart': { const inp = document.getElementById('fee_start'); const r = G.twStart(+d.id, inp ? parseFloat(inp.value) : 0, S.tr.negKind === 'loan' ? 'loan' : undefined); if (r.err) toast(r.err); else { S.tr.negPid = null; toast('협상을 시작했습니다. 다음 턴에 답변이 옵니다.'); } rerender(); break; }
+      case 'tcancel': G.twCancel(+d.id); rerender(); break;
+      case 'tclub': { const r = G.twOfferClub(+d.id, parseFloat(document.getElementById('fee_' + d.id).value)); toast(r.err || '제안을 보냈습니다.'); rerender(); break; }
+      case 'tacc': { const r = G.twAcceptCounter(+d.id); toast(r.err || '이적료에 합의했습니다. 선수와 개인 협상을 진행하세요.'); rerender(); break; }
+      case 'tplayer': { const r = G.twOfferPlayer(+d.id, parseFloat(document.getElementById('wage_' + d.id).value), +document.getElementById('yrs_' + d.id).value); toast(r.err || '계약 조건을 전달했습니다.'); rerender(); break; }
+      case 'tpacc': { const r = G.twAcceptPlayerCounter(+d.id); toast(r.err || '계약 완료!'); rerender(); doSave(false); break; }
+      case 'tnext': { G.twNext(); if (w.state === 'play') { S.tab = 'home'; toast('이적시장이 닫혔습니다. 시즌 개막!'); } else toast(w.tw.turn + '턴이 되었습니다.'); render(); doSave(false); break; }
+      case 'tend': if (confirm('이적시장을 닫고 시즌을 시작할까요? 진행 중인 협상은 모두 취소됩니다.')) { G.twEnd(); S.tab = 'home'; render(); doSave(false); } break;
+      case 'tsell': { const r = G.twInboxAccept(+d.id); toast(r.err || '매각했습니다.'); rerender(); break; }
+      case 'trej': G.twInboxReject(+d.id); rerender(); break;
+      case 'tsb': S.tabsub = d.k; rerender(); break;
+      case 'prematch': S.fxs = G.userFixtures(); S.cur = 0; S.results = []; S.screen = 'prematch'; window.scrollTo(0, 0); render(); break;
+      case 'exitmatch': S.screen = 'game'; render(); break;
+      case 'gotactics': S.screen = 'game'; S.tab = 'tactics'; render(); break;
+      case 'kickoff': startMatch(true); break;
+      case 'instant': startMatch(false); break;
+      case 'mplay': { const m = S.match; if (m.playing) pauseMatch(); else resumeMatch(); break; }
+      case 'mpanel': openPanel('tac'); break;
+      case 'mtab': S.match.ptab = d.k; renderPanel(); break;
+      case 'mtac': { const m = S.match; m.M.setTac(m.M.userSide, d.k, +d.v); renderPanel(); updateMatchUi(); break; }
+      case 'msel': { S.match.selOff = +d.i; renderPanel(); break; }
+      case 'msub': {
+        const m = S.match; if (m.selOff == null) { toast('먼저 교체로 나갈 선수를 선택하세요.'); break; }
+        const r = m.M.sub(m.M.userSide, m.selOff, +d.id);
+        if (r.err) toast(r.err); else { toast('교체 완료'); m.selOff = null; updateMatchUi(); renderPanel(); }
+        break;
+      }
+      case 'tok': { const m = S.match; const s = +d.s, i = +d.i; const pid = lineupOf(s)[i]; const p = w.P[pid]; if (p) toast(`#${p.sn} ${p.n} (${POS[m.res.sides[s].slots[i].pos]}) 체력 ${Math.round(m.M && s === m.M.userSide ? m.M.stam(s, i) : p.cd)}%`); break; }
+      case 'mspeed': { const m = S.match; m.speed = m.speed === 1 ? 2 : m.speed === 2 ? 4 : 1; document.getElementById('bspd').textContent = m.speed + 'x'; break; }
+      case 'mskip': endMatch(); break;
+      case 'finishmatch': {
+        const res = S.match.res; S.match = null; S.results.push(res); S.cur++;
+        if (S.cur < S.fxs.length) { S.screen = 'prematch'; window.scrollTo(0, 0); render(); break; }
+        G.advanceWeek(S.results); S.fxs = []; S.cur = 0; S.results = [];
+        S.screen = 'game'; S.tab = 'home'; window.scrollTo(0, 0); render(); doSave(false); break;
+      }
+      case 'skipweek': G.advanceWeek(null); render(); doSave(false); break;
+      case 'nextseason': G.nextSeason(); S.tab = 'home'; render(); doSave(false); window.scrollTo(0, 0); break;
+      case 'save': doSave(true); break;
+      case 'newgame': if (confirm('새 게임을 시작할까요? 현재 진행 상황은 저장하지 않으면 사라집니다.')) { G.newWorld(); S.screen = 'start'; S.startSel = null; render(); } break;
+    }
+  });
+  document.addEventListener('change', e => {
+    const el = e.target.closest('[data-chg]'); if (!el) return;
+    const k = el.dataset.chg, v = el.value, d = el.dataset, w = G.world();
+    switch (k) {
+      case 'name': S.name = v; break;
+      case 'startC': S.startC = v; S.startT = 0; S.startSel = null; rerender(); break;
+      case 'startT': S.startT = +v; S.startSel = null; rerender(); break;
+      case 'slot': {
+        const t = T(); const lu = G.currentLineup(t, true).slice(); const i = +d.i, nid = +v;
+        const j = lu.indexOf(nid); if (j >= 0) lu[j] = lu[i]; lu[i] = nid; t.lu = lu; t.luF = t.form; rerender(); break;
+      }
+      case 'mpt': { const m = S.match; m.M.setPt(m.M.userSide, +d.id, d.k, +v); break; }
+      case 'pt': { const t = T(); const o = t.pt[d.id] || (t.pt[d.id] = { adv: 3, shoot: 3, risk: 3 }); o[d.k] = +v; break; }
+      case 'trA': w.u.train.a = +v; rerender(); break;
+      case 'trB': w.u.train.b = +v; rerender(); break;
+      case 'focus': w.P[+d.id].ft = +v; toast('개인 훈련을 설정했습니다.'); break;
+      case 'scC': S.sc.c = v; S.sc.team = null; rerender(); break;
+      case 'scT': S.sc.t = +v; S.sc.team = null; rerender(); break;
+      case 'scTeam': S.sc.team = +v; rerender(); break;
+      case 'setnum': { const r = G.setNumber(+d.id, parseFloat(v)); toast(r.err || (r.swap ? '등번호를 변경했습니다. (' + r.swap + ' 선수와 맞교환)' : '등번호를 변경했습니다.')); rerender(); break; }
+      case 'trFc': S.tr.fc = v; S.tr.fteam = null; rerender(); break;
+      case 'trFt': S.tr.ft = +v; S.tr.fteam = null; rerender(); break;
+      case 'trFteam': S.tr.fteam = +v; rerender(); break;
+      case 'tc': S.tc = v; rerender(); break;
+      case 'tt': S.tt = +v; rerender(); break;
+    }
+  });
+
+  /* ---------- 시작 ---------- */
+  function boot() {
+    G.newWorld();
+    S.hasSave = false;
+    const hash = location.hash;
+    if (hash.indexOf('demo=') >= 0) { demo(hash.split('demo=')[1]); return; }
+    render();
+    try {
+      G.hasSave().then(has => { S.hasSave = has; if (has && S.screen === 'start') rerender(); });
+    } catch (err) { /* 저장소를 쓸 수 없는 환경 */ }
+  }
+  // 화면 점검용: index.html#demo=home|squad|player|tactics|indiv|train|scout|judge|table|prematch|match
+  function demo(kind) {
+    const w = G.world();
+    const id = w.cl.byC.ENG[0];
+    G.startGame('데모', id); if (kind !== 'transfer' && kind !== 'neg' && kind !== 'oview') G.twEnd();
+    const t = T(); S.tc = t.cid; S.tt = t.tier; S.sc = { c: 'ENG', t: 0, team: null };
+    for (let i = 0; G.world().state === 'play' && i < 6; i++) { G.advanceWeek(G.userFixtures().map(f => G.simulateMatch(w.teams[f.h], w.teams[f.a], { kind: f.kind }))); }
+    G.doSearch('AF');
+    S.screen = 'game';
+    const map = { home: 'home', squad: 'squad', player: 'squad', tactics: 'tactics', indiv: 'tactics', train: 'train', scout: 'scout', judge: 'scout', table: 'table', transfer: 'transfer', oview: 'transfer', neg: 'transfer', cl: 'table', mine: 'transfer' };
+    if (kind === 'cl') S.tabsub = 'cl';
+    if (kind === 'oview') { const o = w.teams[w.lg.ENG[0].teams.find(x => x !== id)]; S.view = o.pl[3]; G.doJudge(o.pl[3]); }
+    if (kind === 'mine') S.tr.sub = 'mine';
+    if (kind === 'neg') { const o = w.teams[w.lg.ENG[0].teams.find(x => x !== id)]; const p1 = w.P[o.pl[4]]; G.twStart(p1.id, G.twEst(p1.id) * 1.3); G.twNext(); const p2 = w.P[o.pl[8]]; G.twStart(p2.id, G.twEst(p2.id) * 0.6); S.tr.negPid = w.P[o.pl[2]].id; }
+    S.tab = map[kind] || 'home';
+    if (kind === 'player') S.sel = t.pl[3];
+    if (kind === 'indiv') S.tsub = 'indiv';
+    if (kind === 'scout') { const r = G.doSearch('AS'); }
+    if (kind === 'judge') { S.scoutSub = 'judge'; S.sc = { c: 'ENG', t: 0, team: w.lg.ENG[0].teams[2] }; G.doJudge(w.teams[w.lg.ENG[0].teams[2]].pl[5]); }
+    if (kind === 'scout') { S.lastSearch = w.u.seen.slice(-2); G.doJudge(S.lastSearch[0]); }
+    if (kind === 'prematch') { S.fxs = G.userFixtures(); S.cur = 0; S.results = []; S.screen = 'prematch'; }
+    if (kind === 'match') { S.fxs = G.userFixtures(); S.cur = 0; S.results = []; startMatch(true); const m = S.match; pauseMatch(); m.idx = 40; m.htShown = true; updateMatchUi(); return; }
+    render();
+  }
+  window.addEventListener('load', boot);
+})();

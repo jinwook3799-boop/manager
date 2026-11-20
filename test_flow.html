@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>flow test</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div id="app"></div><div id="toast"></div><pre id="out" style="white-space:pre-wrap;font-size:11px">running...</pre>
+<script>window.addEventListener('error',e=>{document.getElementById('out').textContent='JSERR '+e.message+' @'+e.filename.split('/').pop()+':'+e.lineno;});</script>
+<script src="engine.js"></script>
+<script src="ui.js"></script>
+<script>
+window.addEventListener('load', async () => {
+  const out = []; const P = s => out.push(s);
+  const click = sel => { const el = document.querySelector(sel); if (!el) throw new Error('없음: ' + sel); el.click(); };
+  const has = sel => !!document.querySelector(sel);
+  window.confirm = () => true;
+  const fire = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const W = () => G.world();
+  const txt = () => document.body.innerText;
+  try {
+    await sleep(50);
+    P('시작화면 팀목록 수: ' + document.querySelectorAll('[data-act="pickteam"]').length);
+    fire(document.querySelector('[data-chg="startC"]'), 'ENG');
+    const clTeam = W().cl.byC.ENG[0];
+    document.querySelector('[data-act="pickteam"][data-id="' + clTeam + '"]').click();
+    document.getElementById('nm').value = '테스트감독';
+    click('[data-act="startgame"]');
+    P('시작: ' + W().state + ' / ' + document.querySelector('.topbar small').textContent + ' (시즌 전 시장 20턴: ' + (W().tw.max === 20) + ')');
+    const team = G.userTeam();
+    // ---- 시즌 전 이적시장 ----
+    click('[data-act="tab"][data-k="transfer"]');
+    P('이적 탭 기본 화면=스카우터 추천: ' + txt().includes('추천 5개 목록') + ' / 추천 목록 카드(5개): ' + ['즉시 전력감', '성장 유망주', '가성비 영입', '베테랑 보강', '약점 포지션 보강'].every(n => txt().includes(n)));
+    const recBtns = document.querySelectorAll('[data-act="neg"]:not([disabled])'); P('추천 목록의 협상 가능 선수: ' + recBtns.length + '명');
+    // 발굴 선수 규칙 (스카우팅)
+    click('[data-act="tab"][data-k="scout"]'); click('[data-act="search"][data-c="AF"]');
+    const cards = document.querySelectorAll('#app .card [data-act="judge"]'); const pid = +cards[0].dataset.id; cards[0].click();
+    P('발굴 직후 협상 버튼 비활성(다음 시장부터 협상): ' + document.querySelector(`[data-act="neg"][data-id="${pid}"]`).disabled + ' / 안내문구 ' + txt().includes('다음 이적시장부터'));
+    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="found"]'); P('발굴 선수 탭: ' + txt().includes('발굴한 뒤 다음 이적시장부터'));
+    // 추천 목록에서 협상 시작
+    team.bud = 300;
+    click('[data-act="trsub"][data-k="rec"]');
+    const rb = document.querySelector('[data-act="neg"]:not([disabled])'); const rp = +rb.dataset.id; rb.click();
+    const feeInp = document.getElementById('fee_start'); P('추천 선수 협상 카드: 기본 제안액 ' + feeInp.value + 'M (예상 몸값*1.15)');
+    feeInp.value = String(Math.round(G.valueOf(W().P[rp]) * 2 * 10) / 10);
+    click(`[data-act="tstart"][data-id="${rp}"]`);
+    // 선수 찾기 → 능력치 보기 → 협상
+    click('[data-act="trsub"][data-k="find"]');
+    click('[data-act="oview"]');
+    P('선수 능력치 열람: ' + (txt().includes('기술적 능력') && txt().includes('정보 신뢰도')) + ' / 막대 ' + document.querySelectorAll('#app .attr').length + '개');
+    click('[data-act="oback"]');
+    const negBtn = document.querySelector('[data-act="neg"]:not([disabled])'); const tp = +negBtn.dataset.id; negBtn.click();
+    document.getElementById('fee_start').value = String(Math.round(G.valueOf(W().P[tp]) * 2 * 10) / 10);
+    click(`[data-act="tstart"][data-id="${tp}"]`);
+    P('협상 개시: ' + W().tw.neg.length + '건');
+    click('[data-act="tnext"]');
+    P('1턴 후: ' + W().tw.neg.map(n => n.stage + ':' + n.status).join(' | '));
+    const pn = W().tw.neg.find(n => n.pid === rp);
+    if (pn.stage === 'player') {
+      click('[data-act="trsub"][data-k="neg"]');
+      document.getElementById('wage_' + pn.id).value = String(pn.dem.w * 1.2);
+      click(`[data-act="tplayer"][data-id="${pn.id}"]`); click('[data-act="tnext"]');
+      P('연봉 제안 후: ' + pn.status + ' / ' + pn.msg + ' / 영입됨=' + (W().P[rp].t === team.id));
+    }
+    // 내 선수 탭: 능력치, 방출/임대 명단, 등번호
+    click('[data-act="trsub"][data-k="mine"]');
+    const numInp = document.querySelector('[data-chg="setnum"]'); fire(numInp, '77'); P('등번호 77: ' + W().P[+numInp.dataset.id].sn);
+    click('[data-act="oview"]'); P('내 선수 능력치 열람(이적시장 중): ' + (txt().includes('기술적 능력') && txt().includes('성향 (스태프 관찰)'))); click('[data-act="back"]');
+    click('[data-act="trsub"][data-k="mine"]');
+    const saleBtn = document.querySelector('[data-act="sale"]'); const salePid = +saleBtn.dataset.id; saleBtn.click();
+    P('방출 명단 등록: ' + (W().tw.saleList.includes(salePid)) + ' / 화면 표시 ' + txt().includes('방출 명단 취소'));
+    const loanBtn = [...document.querySelectorAll('[data-act="loanout"]')].find(b => !b.disabled);
+    P('임대 명단 버튼(가능한 선수): ' + (loanBtn ? '있음' : '없음') + ' / 임대 불가 선수 비활성: ' + document.querySelectorAll('[data-act="loanout"][disabled]').length + '명');
+    if (loanBtn) loanBtn.click();
+    let offers = 0; for (let k = 0; k < 8 && W().state === 'transfer'; k++) { click('[data-act="tnext"]'); offers = Math.max(offers, W().tw.inbox.length); }
+    P('명단 등록 후 받은 제안 최대 ' + offers + '건');
+    while (W().state === 'transfer') click('[data-act="tnext"]');
+    P('시즌 전 시장 종료: 상태 ' + W().state + ' / 주 ' + W().week);
+    // 시즌 중 제한
+    click('[data-act="tab"][data-k="squad"]'); document.querySelector('[data-act="player"]').click();
+    P('시즌 중 상세: 방출 버튼 없음=' + !has('[data-act="release"]') + ' / 등번호 입력 없음=' + !has('[data-chg="setnum"]'));
+    click('[data-act="back"]');
+    // ---- 시즌 진행 ----
+    click('[data-act="tab"][data-k="home"]');
+    let weeks = 0, matches = 0, twoMatchWeeks = 0, interactive = false, midSeen = false;
+    while ((W().state === 'play' || W().state === 'transfer') && weeks < 70) {
+      if (W().state === 'transfer') {   // 시즌 중 이적시장
+        if (!midSeen) {
+          midSeen = true;
+          P('시즌 중 시장 열림: kind=' + W().tw.kind + ' ' + W().tw.max + '턴, 배율 ' + W().tw.mult + ' / 주 ' + W().week + ' / 홈 배너 ' + txt().includes('시즌 중 이적시장'));
+          click('[data-act="tab"][data-k="transfer"]'); P('시즌 중 시장 경고문구: ' + txt().includes('구단들이 선수를 내놓길 꺼려'));
+          click('[data-act="trsub"][data-k="rec"]'); P('시즌 중 시장 추천 목록: ' + txt().includes('즉시 전력감'));
+          click('[data-act="tend"]'); P('시즌 중 시장 닫음: 상태 ' + W().state + ' / 주 ' + W().week);
+          click('[data-act="tab"][data-k="home"]');
+        } else click('[data-act="tend"]');
+        continue;
+      }
+      if (has('[data-act="prematch"]')) {
+        const cnt = G.userFixtures().length; if (cnt > 1) twoMatchWeeks++;
+        click('[data-act="prematch"]');
+        let k = 0;
+        while (has('[data-act="instant"]') && k++ < 4) {
+          if (cnt > 1 && !interactive) {
+            interactive = true;
+            click('[data-act="kickoff"]'); await sleep(2500); click('[data-act="mplay"]'); click('[data-act="mpanel"]');
+            click('[data-act="mtab"][data-k="sub"]'); click('[data-act="msel"][data-i="9"]'); click('[data-act="msub"]');
+            P('2D 경기 중 교체 로그: ' + document.getElementById('mlog').innerText.includes('교체') + ' / 토큰 체력바 ' + document.querySelectorAll('.tst').length + '개');
+            click('[data-act="mskip"]');
+          } else click('[data-act="instant"]');
+          click('[data-act="finishmatch"]'); matches++;
+        }
+      } else click('[data-act="skipweek"]');
+      weeks++;
+    }
+    P(`한 시즌: 주 ${weeks}, 경기 ${matches}, 주중 2경기 주 ${twoMatchWeeks}, 상태 ${W().state}`);
+    P('보고서 순위 ' + W().report.rank + ' / 마스터스컵 ' + JSON.stringify(W().report.cl));
+    click('[data-act="tab"][data-k="home"]'); P('시즌종료 화면: ' + txt().includes('시즌 종료') + ' / 안내 "20턴": ' + txt().includes('이적시장(20턴)'));
+    click('[data-act="nextseason"]');
+    P('다음 시즌: ' + W().state + ' ' + W().season + '시즌 / 시장 ' + W().tw.max + '턴 / 정산 ' + JSON.stringify(W().u.fin));
+    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="found"]');
+    P('다음 시장 발굴 선수 협상 가능: ' + (document.querySelectorAll('[data-act="neg"]:not([disabled])').length > 0 || !W().u.seen.some(id => W().P[id] && W().P[id].t < 0)));
+    FLOWOK = true;
+    P('FLOW OK');
+  } catch (e) { P('ERROR: ' + e.message + '\n' + (e.stack || '')); }
+  document.getElementById('out').textContent = out.join('\n');
+  document.getElementById('app').style.display = 'none';
+});
+var FLOWOK = false;
+</script></body></html>

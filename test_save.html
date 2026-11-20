@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>save test</title></head>
+<body><pre id="out">running...</pre>
+<script src="engine.js"></script>
+<script>
+const out=[]; const P=s=>{out.push(s); document.getElementById('out').textContent=out.join('\n');};
+G.newWorld(777);
+G.startGame('저장테스트', G.world().lg.ESP[2].teams[4]);
+const name=G.userTeam().name, n=Object.keys(G.world().P).length;
+G.save().then(ok=>{ P('save: '+ok); G.newWorld(1); return G.load(); })
+.then(ok=>{ P('load: '+ok+' / 팀 '+G.userTeam().name+' (원본 '+name+') / 선수수 '+Object.keys(G.world().P).length+' (원본 '+n+')');
+  // 불러온 월드에서 한 주 진행 가능한지
+  const fx=G.userFixture(); const W=G.world(); const res=fx?G.simulateMatch(W.teams[fx.h],W.teams[fx.a],{trace:true}):null; G.advanceWeek(res);
+  P('불러온 뒤 주 진행 OK, week='+W.week);
+  return G.hasSave(); })
+.then(h=>{P('hasSave: '+h); return G.clearSave();}).then(()=>G.hasSave()).then(h=>P('clear 후 hasSave: '+h+'\nSAVE TEST OK'))
+.catch(e=>P('ERROR '+e.message));
+</script></body></html>

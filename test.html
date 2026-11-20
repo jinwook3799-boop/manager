@@ -1,0 +1,135 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>engine test</title></head>
+<body><pre id="out">running...</pre>
+<script>window.addEventListener('error',e=>{document.getElementById('out').textContent='JSERR '+e.message+' @line '+e.lineno;});</script>
+<script src="engine.js"></script>
+<script>
+(function(){
+  const out=[]; const P=s=>out.push(s);
+  try{
+    let t0=performance.now();
+    G.newWorld(12345);
+    const W=G.world();
+    P('월드 생성 ms: '+Math.round(performance.now()-t0)+' / 팀 '+W.teams.length+' / 선수 '+Object.keys(W.P).length);
+    const rnd30=W.teams.filter(t=>t.cid==='RND');
+    const top4=[]; G.COUNTRIES.forEach(c=>W.lg[c.id][0].teams.slice().sort((a,b)=>W.teams[b].lv-W.teams[a].lv).slice(0,4).forEach(i=>top4.push(W.teams[i].lv)));
+    const avg4=top4.reduce((a,b)=>a+b,0)/top4.length;
+    P('랜덤팀 '+rnd30.length+'개, lv/상위4팀평균 비율: 최소 '+(Math.min(...rnd30.map(t=>t.lv))/avg4).toFixed(2)+' ~ 최대 '+(Math.max(...rnd30.map(t=>t.lv))/avg4).toFixed(2));
+    P('첫 시즌 CL: 참가 '+W.cl.teams.length+'팀(중복 '+(W.cl.teams.length-new Set(W.cl.teams).size)+'), first='+W.cl.first+', 랜덤 12팀 '+W.cl.rnds.length);
+    // 첫 시즌 추첨이 팀 수준에 비례하는지: 1부 팀 레벨 순위별 선택 빈도
+    const cnt={}; for(let i=0;i<4000;i++){ const ids=W.lg.ENG[0].teams; G.newWorld; }
+    const ids=W.lg.ENG[0].teams.slice().sort((a,b)=>W.teams[b].lv-W.teams[a].lv);
+    const pick4=()=>{ const pool=ids.slice(), o=[]; while(o.length<4){ const w=pool.map(id=>Math.pow(W.teams[id].lv,6)+0.0005); let x=Math.random()*w.reduce((a,b)=>a+b,0),k=0; for(;k<pool.length-1;k++){x-=w[k]; if(x<=0)break;} o.push(pool[k]); pool.splice(k,1);} return o; };
+    const freq={}; for(let i=0;i<3000;i++) pick4().forEach(id=>freq[id]=(freq[id]||0)+1);
+    P('ENG 1부 레벨순 4위권 진입 확률(상위/중위/하위 3팀): '+[0,1,2,9,10,11,17,18,19].map(i=>((freq[ids[i]]||0)/30).toFixed(0)+'%').join(' '));
+    // 시작
+    const recStat=(teamId,label)=>{ G.startGame('추천테스트', teamId); const tm=G.userTeam(); const avg=tm.pl.map(i=>W.P[i].ca).sort((a,b)=>b-a).slice(0,14).reduce((a,b)=>a+b,0)/14; const recs=W.tw.recs; const all=recs.flatMap(r=>r.items); const n=Math.max(1,all.length);
+      P(label+': 팀 평균 CA '+avg.toFixed(0)+' / 예산 '+tm.bud+'M / 추천 '+recs.length+'개 목록['+recs.map(r=>r.name.split(' ')[0]+r.items.length).join(',')+'] / 추천 평균 CA '+(all.reduce((a,x)=>a+W.P[x.id].ca,0)/n).toFixed(0)+' / 추천 평균 몸값 '+(all.reduce((a,x)=>a+G.valueOf(W.P[x.id]),0)/n).toFixed(1)+'M / 내 팀 선수 포함 '+all.some(x=>W.P[x.id].t===tm.id)+' / 중복 '+(all.length-new Set(all.map(x=>x.id)).size)); };
+    const strongId=W.lg.ENG[0].teams.slice().sort((a,b)=>W.teams[b].lv-W.teams[a].lv)[0]; const weakId=W.lg.ENG[3].teams.slice().sort((a,b)=>W.teams[a].lv-W.teams[b].lv)[0];
+    recStat(strongId,'추천 풀(1부 최상위 팀)'); recStat(weakId,'추천 풀(4부 최하위 팀)');
+    const myId=W.cl.byC.ENG[0];   // 마스터스컵 진출 팀으로 시작
+    G.startGame('테스트', myId);
+    P('시작 상태: '+W.state+' turn '+W.tw.turn+'/'+W.tw.max); W.tw.max=40; /* 테스트에서는 협상 반복을 위해 시장을 길게 둠 */
+    const ut=G.userTeam();
+    P('등번호 중복 없음: '+(new Set(ut.pl.map(i=>W.P[i].sn)).size===ut.pl.length)+' / 예 '+ut.pl.slice(0,5).map(i=>W.P[i].sn).join(','));
+    let r=G.setNumber(ut.pl[0], 99); P('등번호 변경(이적시장 중): '+JSON.stringify(r)+' -> '+W.P[ut.pl[0]].sn);
+    // 이적 협상
+    const sellerId=W.lg.ENG[0].teams.find(i=>i!==myId&&!W.cl.teams.includes(i)); const seller=W.teams[sellerId];
+    const tgt=seller.pl.map(i=>W.P[i]).sort((a,b)=>b.ca-a.ca)[4];
+    P('목표 선수: CA '+tgt.ca+' 나이 '+tgt.a+' 가치 '+G.valueOf(tgt)+'M 예상몸값 '+G.twEst(tgt.id).toFixed(1)+'M / 내 예산 '+ut.bud+'M');
+    ut.bud=500;
+    P('시즌 전 시장: kind='+W.tw.kind+' 턴 '+W.tw.turn+'/'+W.tw.max+' 배율 '+W.tw.mult);
+    let fnd=null; for(let k=0;k<6 && !fnd;k++){ const r=G.doSearch('AF'); if(r.ids) fnd=r.ids.map(i=>W.P[i]).find(p=>p.a<=19); if(!fnd) G.twNext(); }
+    P('발굴 선수 '+(fnd?fnd.n+'('+fnd.a+'세)':'없음')+' / 같은 시장 중 협상 시도: '+(fnd?(G.twStart(fnd.id,0).err||'허용(오류!)'):'-')+' / 발굴하지 않은 풀 선수: '+(G.twStart(W.pool.EU[0],0).err||'허용(오류!)'));
+    let s1=G.twStart(tgt.id, G.twEst(tgt.id)*0.7); P('낮은 첫 제안(예상 몸값의 70%): '+(s1.err||'접수'));
+    G.twNext(); const n=W.tw.neg[0]; P('1턴 후 상태: '+n.status+' / '+n.msg);
+    let guard=0; while(n.stage==='club' && guard++<6){
+      if(n.status==='counter'){ G.twAcceptCounter(n.id); break; }
+      if(n.status==='rejected'){ G.twOfferClub(n.id, n.offer*1.18); G.twNext(); P('  재제안 -> '+n.status+' '+n.msg); }
+      else break; }
+    P('구단 협상 결과 stage='+n.stage+' status='+n.status+' fee='+n.fee+' / '+n.msg);
+    if(n.stage==='player'){ P('선수 요구 연봉 '+n.dem.w+'M, '+n.dem.y+'년 (현재 가치기반 연봉 '+G.wageOf(tgt)+'M)');
+      G.twOfferPlayer(n.id, n.dem.w*0.5, 3); G.twNext(); P('낮은 연봉 제안 결과: '+n.status+' '+n.msg);
+      G.twOfferPlayer(n.id, n.dem.w*1.05, n.dem.y); G.twNext(); P('적정 연봉 제안 결과: '+n.status+' '+n.msg);
+      P('영입 반영: 선수 소속 '+(W.P[tgt.id]?.t===ut.id)+' / 예산 '+ut.bud+' / 등번호 '+W.P[tgt.id].sn); }
+    // ---- 임대 ----
+    const rkS=seller.pl.map(i=>W.P[i]).sort((a,b)=>b.ca-a.ca);
+    P('핵심 선수(팀 1위, CA '+Math.round(rkS[0].ca)+') 임대 시도: '+(G.twStart(rkS[0].id,5,'loan').err||'허용(오류!)'));
+    P('주전급 선수(팀 8위) 임대 가능 여부: '+(G.loanBlock(rkS[7].id)||'가능(오류!)'));
+    const lowP=rkS[15]; P('후보급 선수(팀 16위, CA '+Math.round(lowP.ca)+') 임대 가능 여부: '+(G.loanBlock(lowP.id)||'가능'));
+    const lr=G.twStart(lowP.id, G.twEst(lowP.id)*0.1, 'loan'); P('임대 제안: '+(lr.err||'접수'));
+    const ln=W.tw.neg.find(x=>x.pid===lowP.id);
+    for(let k=0;k<7 && ln && ln.status!=='done' && ln.status!=='failed' && ln.status!=='lost';k++){ G.twNext(); if(ln.status==='counter') G.twAcceptCounter(ln.id); else if(ln.status==='rejected') G.twOfferClub(ln.id, ln.offer*1.3); }
+    P('임대 결과: '+ln.status+' / '+ln.msg+' / 내 소속='+(W.P[lowP.id].t===ut.id)+' loan='+JSON.stringify(W.P[lowP.id].loan));
+    P('임대 선수 방출 시도: '+G.release(lowP.id).err);
+    const loanedId=lowP.id;
+    const mineLow=ut.pl.map(i=>W.P[i]).filter(p=>!p.loan&&p.a<=28).sort((a,b)=>a.ca-b.ca)[0];
+    P('내 최상위 선수 임대 보내기 시도: '+(G.twLoanOut(ut.pl.map(i=>W.P[i]).sort((a,b)=>b.ca-a.ca)[0].id).err||'허용(오류!)'));
+    P('내 후보 선수 임대 명단 등록: '+JSON.stringify(G.twLoanOut(mineLow.id)));
+    let gotLoan=null; for(let k=0;k<5 && W.state==='transfer';k++){ G.twNext(); gotLoan=W.tw.inbox.find(o=>o.kind==='loan'); if(gotLoan) break; }
+    P('임대 제안 수신: '+(gotLoan?('팀 '+W.teams[gotLoan.from].name+' 임대료 '+gotLoan.fee+'M'):'없음'));
+    let outId=null; if(gotLoan){ const rr=G.twInboxAccept(gotLoan.id); outId=mineLow.id; P('임대 보내기 수락: '+JSON.stringify(rr)+' → 소속 '+W.teams[W.P[outId].t].name+' / 내 선수단 '+ut.pl.length+'명'); }
+    // 매각 제안
+    let inboxSeen=0; for(let i=0;i<4 && W.state==='transfer';i++){ inboxSeen+=W.tw.inbox.length; G.twNext(); }
+    P('받은 제안 누계(관찰): '+inboxSeen+' / 현재 턴 '+W.tw.turn+' 상태 '+W.state);
+    // 방출/등번호 제한 확인
+    P('이적시장 중 방출 허용: '+(G.release(ut.pl[ut.pl.length-1]).err||'허용'));
+    while(W.state==='transfer') G.twNext();
+    P('시장 종료 후 상태: '+W.state+', 주 '+W.week);
+    P('시즌 중 등번호 변경 거부: '+G.setNumber(ut.pl[0],5).err);
+    P('시즌 중 방출 거부: '+G.release(ut.pl[0]).err);
+    P('시즌 중 협상 거부: '+G.twStart(tgt.id,10).err);
+
+    function playWeek(){
+      const fxs=G.userFixtures();
+      const res=fxs.map(f=>{ const r=G.simulateMatch(W.teams[f.h],W.teams[f.a],{kind:f.kind}); return r; });
+      G.advanceWeek(res); return fxs.length;
+    }
+    let midDone=false;
+    function midTest(){
+      if(!midDone){
+        midDone=true; const tw=W.tw;
+        P('시즌 중 이적시장 열림: kind='+tw.kind+' 턴 '+tw.turn+'/'+tw.max+' 요구액 배율 '+tw.mult+' / 현재 주 '+W.week+' / 추천 목록 '+tw.recs.length+'개');
+        const sale=ut.pl.map(i=>W.P[i]).filter(p=>!p.loan).sort((a,b)=>b.ca-a.ca)[12]; P('방출 명단 등록: '+JSON.stringify(G.twSaleList(sale.id))+' (CA '+Math.round(sale.ca)+', 가치 '+G.valueOf(sale).toFixed(1)+'M)');
+        const rkM=W.teams[W.lg.ENG[0].teams.find(i=>i!==ut.id)].pl.map(i=>W.P[i]).sort((a,b)=>b.ca-a.ca)[6]; const sm=G.twStart(rkM.id,1); const nm=W.tw.neg.find(n=>n.pid===rkM.id);
+        P('시즌 중 요구액/가치 비율: '+(sm.err||(nm.ask/G.valueOf(rkM)).toFixed(2))+' (시즌 전 기준 1.10~1.50, 시즌 중 1.38~1.88)');
+        const seenO={}; let turns=0;
+        while(W.state==='transfer'){ W.tw.inbox.forEach(o=>{ seenO[o.id]=o; }); G.twNext(); turns++; }
+        const arr=Object.values(seenO), ls=arr.filter(o=>o.listed&&o.pid===sale.id), un=arr.filter(o=>!o.listed&&!o.kind);
+        P('시즌 중 시장 종료: '+turns+'턴 사용, 상태 '+W.state+', 주 '+W.week+' / 방출 명단 선수 제안 '+ls.length+'건(몸값 대비 '+(ls.length?ls.map(o=>(o.fee/G.valueOf(W.P[o.pid])).toFixed(2)).join(','):'-')+') / 명단 밖 선수 제안 '+un.length+'건(몸값 대비 '+(un.length?un.map(o=>(o.fee/G.valueOf(W.P[o.pid])).toFixed(2)).join(','):'-')+')');
+      } else { while(W.state==='transfer') G.twNext(); }
+    }
+    // 시즌 진행 + 체력 관찰
+    t0=performance.now(); let weeks=0, two=0, minCd=100; const cdLog=[];
+    while(W.state==='play'||W.state==='transfer'){ if(W.state==='transfer'){ midTest(); continue; } const k=playWeek(); if(k>=2) two++; weeks++;
+      const lu=G.currentLineup(ut,true); const avg=lu.reduce((a,i)=>a+W.P[i].cd,0)/11; if(weeks%6===0) cdLog.push(weeks+'주:'+Math.round(avg)); if(weeks>60) throw new Error('inf'); }
+    P('1시즌 진행 ms: '+Math.round(performance.now()-t0)+' / 주 '+weeks+' / 주중 경기(리그+마스터스컵) 주 '+two);
+    P('선발 평균 체력 추이: '+cdLog.join(' '));
+    const cl=W.cl; P('CL: phase='+cl.phase+' champion='+(cl.champion!=null?W.teams[cl.champion].name:'없음')+' / 타이 '+cl.ties.length+'개');
+    const rk=cl.rank; P('CL 리그페이즈 순위 1~3: '+rk.slice(0,3).map(i=>W.teams[i].name+'('+cl.table[i].pts+')').join(', ')+' / 랜덤팀 최고순위 '+(Math.min(...cl.rnds.map(i=>rk.indexOf(i)))+1)+'위');
+    const stages={}; cl.teams.forEach(i=>stages[cl.stage[i]]=(stages[cl.stage[i]]||0)+1); P('CL 단계별 팀 수: '+JSON.stringify(stages));
+    P('CL 경기 수 확인: 리그페이즈 팀당 '+cl.table[cl.teams[0]].p+'경기');
+    P('보고서 cl: '+JSON.stringify(W.report.cl)+' / 순위 '+W.report.rank);
+    const prevTop=JSON.stringify(G.COUNTRIES.map(c=>G.sortedTable?0:0));
+    const before=G.COUNTRIES.map(c=>G.sortedTableByLeague(c.id,0).slice(0,4));
+    // 다음 시즌
+    const wBudget=ut.bud;
+    G.nextSeason();
+    if(fnd && W.P[fnd.id]){ const fr=G.twStart(fnd.id,0); const nn=fr.neg; P('다음 이적시장에서 발굴 선수 우선 협상: '+(fr.err||'접수')+(nn?(' / 에이전트 비용 '+nn.fee+'M (가치의 15%='+(G.valueOf(W.P[fnd.id])*0.15).toFixed(1)+'M) / 요구 연봉 '+nn.dem.w+'M'):'')+' / 시장 '+W.tw.kind+' '+W.tw.max+'턴'); }
+    P('임대 복귀 확인: 영입했던 선수 원소속 복귀='+(W.P[loanedId]&&W.P[loanedId].t===sellerId&&!W.P[loanedId].loan)+(outId?(' / 보냈던 선수 복귀='+(W.P[outId]&&W.P[outId].t===ut.id&&!W.P[outId].loan)):''));
+    P('다음 시즌: 상태 '+W.state+' 시즌 '+W.season+' / CL first='+W.cl.first+' / 직전 시즌 상위4팀이 그대로 진출: '+G.COUNTRIES.every((c,i)=>JSON.stringify(W.cl.byC[c.id])===JSON.stringify(before[i])));
+    P('정산: '+JSON.stringify(W.u.fin)+' / 예산 '+wBudget+'→'+ut.bud);
+    const rndRatio=W.teams.filter(t=>t.cid==='RND').map(t=>t.lv/t.base); P('랜덤팀 현재 lv/최초 lv: '+Math.min(...rndRatio).toFixed(2)+'~'+Math.max(...rndRatio).toFixed(2)+' (허용 0.90~1.10)');
+    const repeat=W.cl.rnds.filter(i=>cl.rnds.includes(i)).length; P('랜덤 12팀 중 작년과 같은 팀: '+repeat+'팀');
+    while(W.state==='transfer') G.twNext();
+    for(let s=0;s<3;s++){ while(W.state==='play'||W.state==='transfer'){ if(W.state==='transfer') G.twNext(); else playWeek(); } G.nextSeason(); while(W.state==='transfer') G.twNext(); }
+    P('4시즌 후 시즌 '+W.season+' / 랜덤팀 비율 '+Math.min(...W.teams.filter(t=>t.cid==='RND').map(t=>t.lv/t.base)).toFixed(2)+'~'+Math.max(...W.teams.filter(t=>t.cid==='RND').map(t=>t.lv/t.base)).toFixed(2));
+    // 경기 통계
+    function batch(hid,aid,n){ let hw=0,d=0,aw=0,goals=0,shots=0,y=0,sub=0; for(let i=0;i<n;i++){ const r=G.simulateMatch(W.teams[hid],W.teams[aid],{}); const [a,b]=r.score; goals+=a+b; if(a>b)hw++; else if(a<b)aw++; else d++; shots+=r.st.shots[0]+r.st.shots[1]; y+=r.st.yc[0]+r.st.yc[1]; sub+=r.subs.length; } return `홈승 ${(hw/n*100).toFixed(0)}% 무 ${(d/n*100).toFixed(0)}% 원정승 ${(aw/n*100).toFixed(0)}% | 총득점 ${(goals/n).toFixed(2)} 슈팅 ${(shots/n).toFixed(1)} 경고 ${(y/n).toFixed(2)} 교체 ${(sub/n).toFixed(1)}`; }
+    const t1=W.lg.ENG[0].teams.slice().sort((a,b)=>W.teams[b].lv-W.teams[a].lv);
+    P('강vs강: '+batch(t1[0],t1[1],1000)); P('강(홈) vs 약(원정): '+batch(t1[0],t1[19],1000)); P('중vs중: '+batch(t1[9],t1[10],1000));
+    P('TEST OK');
+  }catch(e){ P('ERROR: '+e.message+'\n'+e.stack); }
+  document.getElementById('out').textContent=out.join('\n');
+})();
+</script></body></html>
