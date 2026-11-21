@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>season test</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div id="app"></div><div id="toast"></div><pre id="out" style="white-space:pre-wrap;font-size:11px">running...</pre>
+<script>window.addEventListener('error',e=>{document.getElementById('out').textContent='JSERR '+e.message+' @'+e.filename.split('/').pop()+':'+e.lineno;});</script>
+<script src="engine.js"></script>
+<script src="ui.js"></script>
+<script>
+/* 점검: 주중 2경기 선발 변경 버그, 자동 진행, 상금, 올해의 감독상, 시즌 기록(순위·득점·도움·베스트 일레븐) */
+window.addEventListener('load', async () => {
+  const out = []; const P = s => out.push(s);
+  const click = sel => { const el = document.querySelector(sel); if (!el) throw new Error('없음: ' + sel); el.click(); };
+  const has = sel => !!document.querySelector(sel);
+  const fire = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  window.confirm = () => true;
+  const W = () => G.world(), txt = () => document.body.innerText;
+  try {
+    await sleep(50);
+    fire(document.querySelector('[data-chg="startC"]'), 'ENG');
+    const clTeam = W().cl.byC.ENG[0];
+    document.querySelector('[data-act="pickteam"][data-id="' + clTeam + '"]').click();
+    click('[data-act="startgame"]');
+    const team = G.userTeam();
+    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="tend"]');
+    // ---- 5. 마스터스컵이 낀 주: 첫 경기 후 선발을 바꾸면 남은 리그 경기에 반영되어야 함 ----
+    while (G.userFixtures().length < 2) { click('[data-act="tab"][data-k="home"]'); click(has('[data-act="prematch"]') ? '[data-act="prematch"]' : '[data-act="skipweek"]'); while (has('[data-act="instant"]')) { click('[data-act="instant"]'); click('[data-act="finishmatch"]'); } }
+    const wk = W().week;
+    click('[data-act="tab"][data-k="home"]'); click('[data-act="prematch"]');
+    P('2경기 주(' + wk + '주차) 첫 경기: ' + document.querySelector('.scoreb small').textContent);
+    const lu0 = G.currentLineup(team, true).slice(), cd0 = W().P[lu0[5]].cd;
+    click('[data-act="instant"]'); click('[data-act="finishmatch"]');
+    P('첫 경기 후 바로 체력 반영: ' + Math.round(cd0) + '% → ' + Math.round(W().P[lu0[5]].cd) + '%');
+    click('[data-act="exitmatch"]'); click('[data-act="tab"][data-k="squad"]');
+    click('[data-act="lusel"][data-k="s"][data-i="5"]'); const bb = document.querySelector('[data-act="lusel"][data-k="b"]:not(.dis)'); const bid = +bb.dataset.id; bb.click();
+    click('[data-act="tab"][data-k="home"]');
+    P('홈: 첫 경기 완료 표시 ' + txt().includes('✅ 완료') + ' / 버튼 "남은 경기 진행" ' + txt().includes('남은 경기 진행'));
+    click('[data-act="prematch"]');
+    P('다시 진행하면 리그 경기로 이어짐: ' + document.querySelector('.scoreb small').textContent.includes('리그') + ' (마스터스컵으로 돌아가지 않음: ' + !document.querySelector('.scoreb small').textContent.includes('마스터스컵') + ')');
+    click('[data-act="instant"]');
+    const lr = S_res(), st = lr.sides[lr.userSide].played.filter(x => x.in === 0).map(x => x.id); P('바꾼 선발이 리그 경기 선발로 출전: ' + st.includes(bid) + ' / 빠진 선수는 선발 아님 ' + !st.includes(lu0[5]) + ' / 경기: ' + lr.kind);
+    click('[data-act="finishmatch"]');
+    P('주 진행: ' + wk + ' → ' + W().week + '주차 / 이번 주 결과 2건 기록 ' + (W().u.hist.filter(x => x.w === wk && x.s === W().season).length === 2));
+    // ---- 4. 자동 진행 ----
+    click('[data-act="tab"][data-k="home"]');
+    P('자동 진행 카드: ' + txt().includes('자동 진행'));
+    document.getElementById('autoTo').value = '15'; document.getElementById('autoWin').checked = false; document.getElementById('autoLu').checked = true;
+    const t0 = performance.now(); click('[data-act="autorun"]');
+    for (let k = 0; k < 400 && S_auto().run; k++) await sleep(20);
+    P('15라운드까지 자동 진행: 현재 ' + W().week + '주차(=16) / 상태 ' + W().state + ' / ' + Math.round(performance.now() - t0) + 'ms');
+    document.getElementById('autoTo').value = '30'; click('[data-act="autorun"]');
+    for (let k = 0; k < 400 && S_auto().run; k++) await sleep(20);
+    P('이적시장에서 멈춤(넘기기 끔): 상태 ' + W().state + ' 주 ' + W().week);
+    document.getElementById('autoTo').value = '46'; document.getElementById('autoWin').checked = true; click('[data-act="autorun"]');
+    for (let k = 0; k < 800 && S_auto().run; k++) await sleep(20);
+    P('끝까지(이적시장 자동 넘김): 상태 ' + W().state);
+    // ---- 1·2·3. 시즌 종료 ----
+    const r = W().report;
+    P('시즌 종료 화면: 감독상 ' + txt().includes('올해의 감독상') + ' / 상금 ' + txt().includes('이번 시즌 상금') + ' / 도움 ' + txt().includes('최고 도움자') + ' / 베스트 일레븐 ' + txt().includes('베스트 일레븐') + ' / 후보 7명 ' + txt().includes('후보 7명'));
+    P('내 리그 감독상: ' + r.moy.mgr + ' (' + r.moy.tname + ', 예상 ' + r.moy.exp + '위 → ' + r.moy.rank + '위) / 우승팀이 아님 가능: 우승팀 ' + r.champ);
+    const arc = W().archive[W().archive.length - 1];
+    P('베스트 일레븐 ' + arc.best.xi.length + '명(' + arc.best.xi.map(x => x.pos).join('') + ') + 후보 ' + arc.best.subs.length + '명 / 득점 1위 ' + arc.topG[0].n + ' ' + arc.topG[0].g + '골 / 도움 1위 ' + arc.topA[0].n + ' ' + arc.topA[0].as + '도움');
+    const aw = arc.awards, notChamp = aw.filter(a => a.rank > 1).length, over = aw.every(a => a.rank <= a.exp);
+    P('24개 리그 감독상: 우승팀이 아닌 수상 ' + notChamp + '/24 / 모두 기대 이상(최종 ≤ 예상) ' + over);
+    P('상금: 리그 ' + r.prize.league + 'M, 승격 ' + r.prize.promo + 'M, 마스터스컵 ' + r.prize.cl + 'M (예전 마스터스컵 최대 28M → 지금 ' + G.CL_PRIZE.champion + 'M+수당)');
+    const bud0 = team.bud;
+    click('[data-act="nextseason"]');
+    P('정산: ' + JSON.stringify(W().u.fin) + ' / 예산 ' + bud0 + ' → ' + team.bud);
+    const L1 = W().lg.ENG[0]; const pz = [0, 9, 19].map(k => G.leaguePrize({ cid: 'ENG', tier: 0 }, k, 20).prize); const pz4 = [0, 23].map(k => G.leaguePrize({ cid: 'ENG', tier: 3 }, k, 24).prize);
+    P('리그 상금표(잉글랜드): 1부 1위/10위/20위 ' + pz.join('/') + 'M, 4부 1위/24위 ' + pz4.join('/') + 'M');
+    click('[data-act="tab"][data-k="table"]'); click('[data-act="tsb"][data-k="hist"]');
+    P('순위 탭 시즌 기록: 순위표 ' + txt().includes('최종 순위') + ' / 행 ' + document.querySelectorAll('#app table.tbl tr').length + ' / 베스트 일레븐 ' + txt().includes('베스트 일레븐') + ' / 리그별 우승팀 ' + txt().includes('리그별 우승팀'));
+    P('SEASON OK');
+  } catch (e) { P('ERROR: ' + e.message + '\n' + (e.stack || '')); }
+  document.getElementById('out').textContent = out.join('\n');
+  document.getElementById('app').style.display = 'none';
+});
+</script>
+<script>
+// 화면 상태(S)는 ui.js 내부라 직접 못 보므로, 마지막 경기 결과/자동 진행 상태를 화면과 데이터로 추정
+function S_res() { return window.__lastRes; }
+function S_auto() { return { run: !!document.querySelector('[data-act="autostop"]') }; }
+</script>
+</body></html>

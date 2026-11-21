@@ -13,6 +13,7 @@ window.addEventListener('load', async () => {
   window.confirm = () => true;
   const fire = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const S_open = id => { const b = document.querySelector(`[data-act="player"][data-id="${id}"]`); if (!b) throw new Error('선수 버튼 없음 ' + id); b.click(); };
   const W = () => G.world();
   const txt = () => document.body.innerText;
   try {
@@ -32,8 +33,22 @@ window.addEventListener('load', async () => {
     // 발굴 선수 규칙 (스카우팅)
     click('[data-act="tab"][data-k="scout"]'); click('[data-act="search"][data-c="AF"]');
     const cards = document.querySelectorAll('#app .card [data-act="judge"]'); const pid = +cards[0].dataset.id; cards[0].click();
-    P('발굴 직후 협상 버튼 비활성(다음 시장부터 협상): ' + document.querySelector(`[data-act="neg"][data-id="${pid}"]`).disabled + ' / 안내문구 ' + txt().includes('다음 이적시장부터'));
-    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="found"]'); P('발굴 선수 탭: ' + txt().includes('발굴한 뒤 다음 이적시장부터'));
+    P('발굴 직후 협상 가능 + 다음 시장 합류 안내: ' + !document.querySelector(`[data-act="neg"][data-id="${pid}"]`).disabled + ' / ' + txt().includes('다음 이적시장이 열릴 때 합류') + ' / 해외 구단 소속 표시: ' + txt().includes(G.ocName(W().P[pid])));
+    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="found"]'); P('발굴 선수 탭(해외 구단 안내): ' + txt().includes('해외 소규모 구단'));
+    // ---- 스쿼드: 1군/2군, 선발·후보 교체, 분류별 능력치 ----
+    click('[data-act="tab"][data-k="squad"]');
+    P('스쿼드 1군 화면: 선발/후보 구분 ' + (txt().includes('선발 11명') && txt().includes('후보 ')) + ' / 기본 정보(키·몸무게) ' + /키 \d+cm · \d+kg/.test(txt()));
+    { const lu0 = G.currentLineup(team, true).slice(); click('[data-act="lusel"][data-k="s"][data-i="5"]'); const bb = document.querySelector('[data-act="lusel"][data-k="b"]:not(.dis)'); const bid = +bb.dataset.id; bb.click();
+      const lu1 = G.currentLineup(team, true); P('선발 → 후보 터치 교체: ' + (lu1[5] === bid && lu0[5] !== bid) + ' / 나간 선수 후보로 ' + !lu1.includes(lu0[5])); }
+    click('[data-act="sqv"][data-k="tech"]'); P('분류=기술적: 슈팅 표시 ' + txt().includes('슈팅') + ' / 능력치 칸 ' + document.querySelectorAll('#app .av').length + '개');
+    click('[data-act="sqv"][data-k="phys"]'); P('분류=신체적: 속력 표시 ' + txt().includes('속력'));
+    click('[data-act="sqv"][data-k="base"]');
+    click('[data-act="sqt"][data-k="res"]'); P('2군 탭: ' + txt().includes('2군 일정') + ' / 2군 선수 ' + (team.res || []).length + '명');
+    click('[data-act="sqt"][data-k="first"]');
+    { const expP = team.pl.map(id => W().P[id]).find(p => G.yearsLeft(p) <= 1 && !p.loan);
+      if (expP) { S_open(expP.id); P('계약 1년 이하 선수 상세: 재계약 버튼 ' + has('[data-act="renew"]') + ' / 계약 표시 ' + txt().includes('시즌까지'));
+        click('[data-act="renew"]'); const rn = W().tw.neg.find(n => n.pid === expP.id && n.kind === 'renew'); P('재계약 협상 시작 → 이적 탭 협상: ' + !!rn + ' / 카드 ' + txt().includes('재계약'));
+        if (rn) { rn.refuse = false; document.getElementById('wage_' + rn.id).value = String(rn.dem.ask * 1.1); click(`[data-act="tplayer"][data-id="${rn.id}"]`); click('[data-act="tnext"]'); P('재계약 결과: ' + rn.status + ' / ' + rn.msg); } } }
     // 추천 목록에서 협상 시작
     team.bud = 300;
     click('[data-act="trsub"][data-k="rec"]');
@@ -55,7 +70,7 @@ window.addEventListener('load', async () => {
     const pn = W().tw.neg.find(n => n.pid === rp);
     if (pn.stage === 'player') {
       click('[data-act="trsub"][data-k="neg"]');
-      document.getElementById('wage_' + pn.id).value = String(pn.dem.w * 1.2);
+      document.getElementById('wage_' + pn.id).value = String(pn.dem.ask * 1.2);
       click(`[data-act="tplayer"][data-id="${pn.id}"]`); click('[data-act="tnext"]');
       P('연봉 제안 후: ' + pn.status + ' / ' + pn.msg + ' / 영입됨=' + (W().P[rp].t === team.id));
     }
@@ -77,6 +92,25 @@ window.addEventListener('load', async () => {
     click('[data-act="tab"][data-k="squad"]'); document.querySelector('[data-act="player"]').click();
     P('시즌 중 상세: 방출 버튼 없음=' + !has('[data-act="release"]') + ' / 등번호 입력 없음=' + !has('[data-chg="setnum"]'));
     click('[data-act="back"]');
+    // ---- 시즌 중 협상 / 무소속 / 2군 ----
+    click('[data-act="tab"][data-k="transfer"]');
+    P('시즌 중 이적 탭: 협상 화면 ' + txt().includes('시즌 중 협상') + ' / 내 선수·받은 제안 탭 숨김 ' + !has('[data-act="trsub"][data-k="mine"]'));
+    click('[data-act="trsub"][data-k="fa"]');
+    { const fb = document.querySelector('[data-act="neg"]:not([disabled])'); const fid = +fb.dataset.id; fb.click();
+      P('무소속 협상 화면: 이적료 없음 안내 ' + txt().includes('이적료 없이')); click(`[data-act="tstart"][data-id="${fid}"]`);
+      const fn = W().tw.neg.find(n => n.pid === fid); document.getElementById('wage_' + fn.id).value = String(fn.dem.ask * 1.2); click(`[data-act="tplayer"][data-id="${fn.id}"]`);
+      click('[data-act="tab"][data-k="home"]'); click(has('[data-act="prematch"]') ? '[data-act="prematch"]' : '[data-act="skipweek"]');
+      while (has('[data-act="instant"]')) { click('[data-act="instant"]'); click('[data-act="finishmatch"]'); }
+      P('시즌 중 무소속 계약: ' + fn.status + ' / 바로 합류 ' + (W().P[fid] && W().P[fid].t === team.id)); }
+    click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="find"]');
+    { const nb = document.querySelector('[data-act="neg"]:not([disabled])'); const xid = +nb.dataset.id; nb.click();
+      P('시즌 중 이적 협상 안내: ' + txt().includes('다음 이적시장이 열릴 때 합류')); document.getElementById('fee_start').value = String(G.valueOf(W().P[xid]) * 3); click(`[data-act="tstart"][data-id="${xid}"]`);
+      P('시즌 중 이적 협상 접수: ' + !!W().tw.neg.find(n => n.pid === xid && G.negActive(n))); }
+    { let k = 0; while (!(W().u.rlast && W().u.rlast.w === W().week) && k++ < 4) { click('[data-act="tab"][data-k="home"]'); click(has('[data-act="prematch"]') ? '[data-act="prematch"]' : '[data-act="skipweek"]'); while (has('[data-act="instant"]')) { click('[data-act="instant"]'); click('[data-act="finishmatch"]'); } }
+      click('[data-act="tab"][data-k="squad"]'); click('[data-act="sqt"][data-k="res"]');
+      P('2군 경기 출전 표시: ' + txt().includes('2군 경기 출전: 3일 전'));
+      const rid = W().u.rlast.ids[0], cd0 = W().P[rid].cd; click(`[data-act="tofirst"][data-id="${rid}"]`);
+      P('2군 → 1군: ' + (!W().P[rid].r2) + ' / 체력 ' + Math.round(W().P[rid].cd) + '% (깎인 채 유지 ' + (W().P[rid].cd === cd0 && cd0 < 100) + ')'); click('[data-act="sqt"][data-k="first"]'); }
     // ---- 시즌 진행 ----
     click('[data-act="tab"][data-k="home"]');
     let weeks = 0, matches = 0, twoMatchWeeks = 0, interactive = false, midSeen = false;
@@ -116,6 +150,7 @@ window.addEventListener('load', async () => {
     P('다음 시즌: ' + W().state + ' ' + W().season + '시즌 / 시장 ' + W().tw.max + '턴 / 정산 ' + JSON.stringify(W().u.fin));
     click('[data-act="tab"][data-k="transfer"]'); click('[data-act="trsub"][data-k="found"]');
     P('다음 시장 발굴 선수 협상 가능: ' + (document.querySelectorAll('[data-act="neg"]:not([disabled])').length > 0 || !W().u.seen.some(id => W().P[id] && W().P[id].t < 0)));
+    click('[data-act="tab"][data-k="home"]'); P('홈 소식(계약 만료 → 무소속 / 유스 2군 입단): ' + W().u.log.some(l => l.t.includes('무소속으로 떠났습니다')) + ' / ' + W().u.log.some(l => l.t.includes('유스 입단(2군)')));
     FLOWOK = true;
     P('FLOW OK');
   } catch (e) { P('ERROR: ' + e.message + '\n' + (e.stack || '')); }

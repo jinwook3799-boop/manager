@@ -40,7 +40,7 @@
     ut.bud=500;
     P('시즌 전 시장: kind='+W.tw.kind+' 턴 '+W.tw.turn+'/'+W.tw.max+' 배율 '+W.tw.mult);
     let fnd=null; for(let k=0;k<6 && !fnd;k++){ const r=G.doSearch('AF'); if(r.ids) fnd=r.ids.map(i=>W.P[i]).find(p=>p.a<=19); if(!fnd) G.twNext(); }
-    P('발굴 선수 '+(fnd?fnd.n+'('+fnd.a+'세)':'없음')+' / 같은 시장 중 협상 시도: '+(fnd?(G.twStart(fnd.id,0).err||'허용(오류!)'):'-')+' / 발굴하지 않은 풀 선수: '+(G.twStart(W.pool.EU[0],0).err||'허용(오류!)'));
+    P('발굴 선수 '+(fnd?fnd.n+'('+fnd.a+'세)':'없음')+' / 같은 시장 중 계약 시 합류 시점: '+(fnd?G.joinTiming(fnd):'-')+' / 발굴하지 않은 풀 선수: '+(G.twStart(W.pool.EU[0],0).err||'허용(오류!)'));
     let s1=G.twStart(tgt.id, G.twEst(tgt.id)*0.7); P('낮은 첫 제안(예상 몸값의 70%): '+(s1.err||'접수'));
     G.twNext(); const n=W.tw.neg[0]; P('1턴 후 상태: '+n.status+' / '+n.msg);
     let guard=0; while(n.stage==='club' && guard++<6){
@@ -48,9 +48,9 @@
       if(n.status==='rejected'){ G.twOfferClub(n.id, n.offer*1.18); G.twNext(); P('  재제안 -> '+n.status+' '+n.msg); }
       else break; }
     P('구단 협상 결과 stage='+n.stage+' status='+n.status+' fee='+n.fee+' / '+n.msg);
-    if(n.stage==='player'){ P('선수 요구 연봉 '+n.dem.w+'M, '+n.dem.y+'년 (현재 가치기반 연봉 '+G.wageOf(tgt)+'M)');
-      G.twOfferPlayer(n.id, n.dem.w*0.5, 3); G.twNext(); P('낮은 연봉 제안 결과: '+n.status+' '+n.msg);
-      G.twOfferPlayer(n.id, n.dem.w*1.05, n.dem.y); G.twNext(); P('적정 연봉 제안 결과: '+n.status+' '+n.msg);
+    if(n.stage==='player'){ P('선수 요구 연봉 '+n.dem.ask+'M, '+n.dem.y+'년 (현재 가치기반 연봉 '+G.wageOf(tgt)+'M)');
+      G.twOfferPlayer(n.id, n.dem.ask*0.5, 3); G.twNext(); P('낮은 연봉 제안 결과: '+n.status+' '+n.msg);
+      G.twOfferPlayer(n.id, n.dem.ask*1.05, n.dem.y); G.twNext(); P('적정 연봉 제안 결과: '+n.status+' '+n.msg);
       P('영입 반영: 선수 소속 '+(W.P[tgt.id]?.t===ut.id)+' / 예산 '+ut.bud+' / 등번호 '+W.P[tgt.id].sn); }
     // ---- 임대 ----
     const rkS=seller.pl.map(i=>W.P[i]).sort((a,b)=>b.ca-a.ca);
@@ -78,7 +78,7 @@
     P('시장 종료 후 상태: '+W.state+', 주 '+W.week);
     P('시즌 중 등번호 변경 거부: '+G.setNumber(ut.pl[0],5).err);
     P('시즌 중 방출 거부: '+G.release(ut.pl[0]).err);
-    P('시즌 중 협상 거부: '+G.twStart(tgt.id,10).err);
+    { const sr=G.twStart(tgt.id,10); P('시즌 중 협상: '+(sr.err||('접수(합류 시점 '+sr.neg.join+')'))); if(sr.neg) G.twCancel(sr.neg.id); }
 
     function playWeek(){
       const fxs=G.userFixtures();
@@ -115,7 +115,7 @@
     // 다음 시즌
     const wBudget=ut.bud;
     G.nextSeason();
-    if(fnd && W.P[fnd.id]){ const fr=G.twStart(fnd.id,0); const nn=fr.neg; P('다음 이적시장에서 발굴 선수 우선 협상: '+(fr.err||'접수')+(nn?(' / 에이전트 비용 '+nn.fee+'M (가치의 15%='+(G.valueOf(W.P[fnd.id])*0.15).toFixed(1)+'M) / 요구 연봉 '+nn.dem.w+'M'):'')+' / 시장 '+W.tw.kind+' '+W.tw.max+'턴'); }
+    if(fnd && W.P[fnd.id]){ const fr=G.twStart(fnd.id,G.valueOf(W.P[fnd.id])*0.5); const nn=fr.neg; P('다음 이적시장에서 발굴 선수 협상: '+(fr.err||'접수')+(nn?(' / 해외 구단('+G.ocName(W.P[fnd.id])+') 요구액 '+nn.ask+'M = 가치의 '+(nn.ask/G.valueOf(W.P[fnd.id])).toFixed(2)+'배 / 합류 시점 '+nn.join):'')+' / 시장 '+W.tw.kind+' '+W.tw.max+'턴'); }
     P('임대 복귀 확인: 영입했던 선수 원소속 복귀='+(W.P[loanedId]&&W.P[loanedId].t===sellerId&&!W.P[loanedId].loan)+(outId?(' / 보냈던 선수 복귀='+(W.P[outId]&&W.P[outId].t===ut.id&&!W.P[outId].loan)):''));
     P('다음 시즌: 상태 '+W.state+' 시즌 '+W.season+' / CL first='+W.cl.first+' / 직전 시즌 상위4팀이 그대로 진출: '+G.COUNTRIES.every((c,i)=>JSON.stringify(W.cl.byC[c.id])===JSON.stringify(before[i])));
     P('정산: '+JSON.stringify(W.u.fin)+' / 예산 '+wBudget+'→'+ut.bud);

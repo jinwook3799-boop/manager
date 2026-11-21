@@ -161,11 +161,21 @@
     return v * (Math.abs(p.p - pos) === 1 ? 0.93 : 0.85);
   }
   function refresh(p) { p.ca = Math.round(calcCA(p) * 10) / 10; if (p.pa < p.ca) p.pa = p.ca; }
+  const abilityVal = p => 20 * Math.pow(p.ca / 100, 4);   // 나이를 빼고 능력만 본 가치
   function valueOf(p) {
-    let v = 20 * Math.pow(p.ca / 100, 4);
+    let v = abilityVal(p);
     if (p.a <= 22) v *= 1 + Math.max(0, p.pa - p.ca) / 60;
-    if (p.a >= 31) v *= Math.max(0.2, 1 - (p.a - 30) * 0.15);
+    // 능력치가 떨어지기 시작하는 나이(29세~)부터 이적료가 빠르게 낮아진다
+    if (p.a >= 29) v *= Math.max(0.1, 1 - (p.a - 28) * 0.14);
     return Math.max(0.05, r1(v));
+  }
+  // 시장 연봉: 나이가 아니라 현재 능력 기준. 30~33세 베테랑은 이적료는 낮아도 연봉은 상대적으로 높고,
+  // 더 나이가 들면 능력이 떨어진 만큼 요구 연봉도 함께 낮아진다(능력 기준이므로).
+  function marketWage(p) {
+    let w = 0.05 + 0.08 * abilityVal(p);
+    if (p.a <= 20) w *= 0.85;
+    else if (p.a >= 30 && p.a <= 33) w *= 1.15;
+    return Math.round(w * 100) / 100;
   }
   function genName(reg) {
     const o = NM[reg];
@@ -195,7 +205,9 @@
       if (pos !== 0 && i >= 15) b = 2 + rnd() * 5;
       at[i] = clamp(b, 1, 20);
     }
-    const p = { id: 0, n: genName(reg), nat: pick(NM[reg].n), a: age, p: pos, at, pa, ip: clamp(Math.round(10 + norm() * 4), 1, 20), bm: clamp(Math.round(10 + norm() * 4), 1, 20), dv: clamp(Math.round(10 + norm() * 4 + (age <= 21 ? (pa - ca) / 15 : 0)), 1, 20), pr: clamp(Math.round(10 + norm() * 4), 1, 20), t: -1, inj: 0, cd: 100, g: 0, ap: 0, si: 0, ft: -1, ca: 0 };
+    const hgt = Math.round(clamp([189, 184, 178, 181][pos] + norm() * 5.5, 163, 203));
+    const kg = Math.round(clamp((hgt - 100) * 0.88 + norm() * 4 - (age <= 18 ? 4 : 0), 55, 100));
+    const p = { id: 0, n: genName(reg), nat: pick(NM[reg].n), a: age, p: pos, at, pa, h: hgt, kg, ce: (W ? W.season : 1) + ri(0, 4), ip: clamp(Math.round(10 + norm() * 4), 1, 20), bm: clamp(Math.round(10 + norm() * 4), 1, 20), dv: clamp(Math.round(10 + norm() * 4 + (age <= 21 ? (pa - ca) / 15 : 0)), 1, 20), pr: clamp(Math.round(10 + norm() * 4), 1, 20), t: -1, inj: 0, cd: 100, g: 0, ap: 0, si: 0, ft: -1, ca: 0 };
     for (let t = 0; t < 4; t++) {
       const d = (ca - calcCA(p)) / 10;
       for (let i = 0; i < 17; i++) {
@@ -205,6 +217,7 @@
     }
     p.at = p.at.map(x => r1(x));
     refresh(p);
+    p.w = Math.round(marketWage(p) * (0.65 + 0.25 * rnd()) * 100) / 100;   // 기존 계약은 시장 요구 연봉보다 낮은 편
     return p;
   }
   function addPlayer(p) { p.id = W.nid++; W.P[p.id] = p; return p; }
@@ -242,10 +255,21 @@
       }
     }
     fixNumbers(team);
+    team.res = [];
+    for (let i = 0; i < RES_SIZE; i++) addReserve(team, [0, 1, 1, 2, 2, 3, 3, 1][i % 8], ri(17, 21));
+  }
+  /* ---------- 2군 (리그는 없고 주중 일정만 있음) ---------- */
+  const RES_SIZE = 8, RES_MAX = 20;
+  function addReserve(team, pos, age) {
+    const c = COUNTRIES.find(x => x.id === team.cid);
+    const reg = (!c || rnd() < 0.25) ? pick(['en', 'fr', 'de', 'pt', 'es', 'it', 'af', 'sa']) : c.reg;
+    const p = genPlayer(Math.max(0.02, team.lv - 0.12), pos, age, reg);
+    p.t = team.id; p.r2 = true; addPlayer(p); team.res.push(p.id);
+    return p;
   }
   function newWorld(seed) {
     setSeed(seed || (Date.now() >>> 0));
-    W = { season: 1, week: 1, nid: 1, P: {}, teams: [], lg: {}, pool: {}, state: 'play', report: null, u: null, MAXW: MAX_WEEKS };
+    W = { season: 1, week: 1, nid: 1, P: {}, teams: [], lg: {}, pool: {}, state: 'play', report: null, u: null, MAXW: MAX_WEEKS, fa: [], pendIn: [], tick: 0, oc: {} };
     const used = new Set();
     COUNTRIES.forEach(c => {
       W.lg[c.id] = [];
@@ -267,20 +291,49 @@
     W.prevTop = null; W.cl = null; W.tw = null;
     setupCL();
     CONTINENTS.forEach(ct => {
+      W.oc[ct.id] = genOverseasClubs(ct.id);
       W.pool[ct.id] = [];
       fillPool(ct.id, 500);
     });
+    // 처음부터 계약이 끝나 무소속인 선수들
+    for (let i = 0; i < 150; i++) {
+      const p = genPlayer(clamp(0.05 + rnd() * 0.6, 0, 1), pick([0, 1, 1, 2, 2, 3, 3]), ri(21, 34), pick(['en', 'fr', 'de', 'pt', 'es', 'it', 'af', 'sa']));
+      makeFA(addPlayer(p));
+    }
     return W;
   }
+  // 유망주 풀 선수의 소속 구단(6개국 리그 밖의 해외 소규모 구단). 이름은 임시 생성값
+  const OC_NAME = {
+    EU: [['노르', '발트', '카르', '슬로', '다누', '크로', '베스', '오스트', '리프', '몰데'], ['비아', '엔', '스크', '보르', '니카', '타'], ['FK', 'SK', 'NK', 'IF', 'BK']],
+    SA: [['리오', '산타', '플라', '베르', '콘도', '알타', '몬테', '파라'], ['베르데', '마르', '나', '로사', '델', '시아'], ['FC', 'CA', 'CD', 'EC', 'SC']],
+    NA: [['코로', '시에', '레드', '파인', '그란', '베이', '솔', '메사'], ['나도', '라', '우드', '리버', '비스타', '포트'], ['FC', 'SC', '유나이티드', 'CF']],
+    AF: [['사바', '칼라', '누비', '아틀라', '카사', '반자', '몸바', '니제'], ['나', '리', '오', '스타', '라', '마'], ['FC', 'SC', 'AC', '스타즈']],
+    AS: [['사쿠', '타이', '하나', '미르', '소라', '실크', '케디', '아라'], ['울', '라', '온', '강', '빛', '하'], ['FC', 'SC', '유나이티드']],
+    OC: [['코랄', '타스', '웰', '캔', '오크', '마오', '리프', '서던'], ['베이', '먼', '튼', '리', '하버', '스'], ['FC', 'SC', '유나이티드']]
+  };
+  function genOverseasClubs(cid) {
+    const [a, b, c] = OC_NAME[cid], out = new Set();
+    let g = 0; while (out.size < 24 && g++ < 500) out.add(pick(a) + pick(b) + ' ' + pick(c));
+    return Array.from(out);
+  }
+  function ocName(p) { const arr = (W.oc || {})[p.c]; return arr && p.oc != null ? arr[p.oc % arr.length] : '해외 구단'; }
   function fillPool(cid, target) {
     const regs = CONT_REG[cid];
     while (W.pool[cid].length < target) {
       const age = ri(15, 21);
       const L = clamp(0.1 + rnd() * 0.75, 0, 1);
       const p = genPlayer(L, pick([0, 1, 1, 2, 2, 3, 3]), age, pick(regs));
-      p.c = cid; p.t = -1; addPlayer(p); W.pool[cid].push(p.id);
+      p.c = cid; p.t = -1; p.oc = ri(0, 23); addPlayer(p); W.pool[cid].push(p.id);
     }
   }
+  /* ---------- 무소속(자유계약) 선수 ---------- */
+  function makeFA(p) {
+    p.t = -1; p.fa = true; p.fas = W.season; p.r2 = false; p.sn = null;
+    delete p.c; delete p.loan; delete p.pend;
+    if (!W.fa.includes(p.id)) W.fa.push(p.id);
+    return p;
+  }
+  function removeFA(p) { W.fa = W.fa.filter(x => x !== p.id); delete p.fa; delete p.fas; }
   function roundRobin(ids) {
     const n = ids.length, arr = ids.slice(), rounds = [];
     for (let r = 0; r < n - 1; r++) {
@@ -302,7 +355,9 @@
       });
     });
     W.teams.forEach(t => { t.hist = []; });
-    for (const id in W.P) { const p = W.P[id]; p.g = 0; p.ap = 0; p.si = 0; }
+    for (const id in W.P) { const p = W.P[id]; p.g = 0; p.as = 0; p.ap = 0; p.rap = 0; p.si = 0; }
+    // 올해의 감독상 판정용: 시즌 시작 시점 전력 순위(기대 순위)
+    COUNTRIES.forEach(c => W.lg[c.id].forEach(L => { L.exp = expRanks(L); }));
   }
   function sortedTable(L) {
     return L.teams.slice().sort((a, b) => {
@@ -341,7 +396,7 @@
     const s = new Set();
     for (const id of lu) {
       const p = W.P[id];
-      if (!p || p.t !== team.id || p.inj || s.has(id)) return false;
+      if (!p || p.t !== team.id || p.r2 || p.inj || s.has(id)) return false;
       s.add(id);
     }
     return true;
@@ -353,12 +408,12 @@
         const slots = slotsFor(team.form);
         if (team.lu && team.luF === team.form && team.lu.length === 11) {
           const keep = new Set(); const lu = team.lu.slice();
-          lu.forEach(id => { const p = W.P[id]; if (p && p.t === team.id && !p.inj && !keep.has(id)) keep.add(id); });
+          lu.forEach(id => { const p = W.P[id]; if (p && p.t === team.id && !p.r2 && !p.inj && !keep.has(id)) keep.add(id); });
           const avail = availablePlayers(team).filter(p => !keep.has(p.id));
           const seen = new Set();
           for (let i = 0; i < 11; i++) {
             const id = lu[i], p = W.P[id];
-            if (p && p.t === team.id && !p.inj && !seen.has(id)) { seen.add(id); continue; }
+            if (p && p.t === team.id && !p.r2 && !p.inj && !seen.has(id)) { seen.add(id); continue; }
             let best = null, bs = -1;
             for (const q of avail) { if (seen.has(q.id)) continue; const sc = caAs(q, slots[i].pos); if (sc > bs) { bs = sc; best = q; } }
             if (!best) { team.lu = null; break; }
@@ -511,7 +566,13 @@
     function goalCheck(s, m, shooterIdx, kind) {
       score[s]++;
       const p = W.P[S[s].slots[shooterIdx].id];
-      scorers.push({ s, m, id: p.id, kind });
+      // 도움: 프리킥 직접 골이 아니면 75% 확률로 패스·위치에 따라 도움 선수를 정한다
+      let aid = null;
+      if (kind !== '프리킥' && rnd() < 0.75) {
+        let tot = 0; const wts = S[s].slots.map((sl, i) => { if (i === shooterIdx || sl.pos === 0) return 0; const q = W.P[sl.id]; const v = (q.at[1] + 0.5 * q.at[5] + 0.3 * q.at[3]) * (sl.pos === 2 ? 1.3 : sl.pos === 3 ? 1.1 : 0.6); tot += v; return v; });
+        let x = rnd() * tot; for (let i = 0; i < 11; i++) { x -= wts[i]; if (wts[i] > 0 && x <= 0) { aid = S[s].slots[i].id; break; } }
+      }
+      scorers.push({ s, m, id: p.id, kind, aid });
       logEv(m, s, 'goal', `⚽ ${label(m)}' 골! ${S[s].team.name} - ${p.n}${kind ? ' (' + kind + ')' : ''}  [${score[0]}:${score[1]}]`);
       poss = 1 - s; c = 3; r = 5; boost = 0;
     }
@@ -660,14 +721,25 @@
         const p = W.P[sid]; if (!p) continue;
         const mins = res.minutes[s][sid], f = mins / 90;
         p.ap++;
-        if (isUser) { const e = res.end && res.end[s] ? res.end[s][sid] : null; p.cd = clamp(e != null ? e : p.cd - 20 * f, 5, 100); p.pw = (p.pw || 0) + 1; }
+        if (isUser && !res.fatDone) { const e = res.end && res.end[s] ? res.end[s][sid] : null; p.cd = clamp(e != null ? e : p.cd - 20 * f, 5, 100); p.pw = (p.pw || 0) + 1; }
         const base = 0.010 + 0.0007 * p.ip;
         const opp = res.sides[1 - s].tac.foul;
         const pr = f * base * (1 + 0.1 * (opp - 3)) * (1 + 0.15 * (S.tac.press - 3)) * (isUser && p.cd < 50 ? 1.6 : 1);
         if (rnd() < pr) setInjury(p, team, isUser);
       }
     });
-    res.scorers.forEach(sc => { const p = W.P[sc.id]; if (p) p.g++; });
+    res.scorers.forEach(sc => { const p = W.P[sc.id]; if (p) p.g++; const a = sc.aid != null ? W.P[sc.aid] : null; if (a) a.as = (a.as || 0) + 1; });
+  }
+  // 한 주에 2경기(마스터스컵 + 리그)일 때, 첫 경기가 끝나면 바로 체력을 반영해 두 번째 경기 선발 선택에 쓰이게 한다
+  function applyUserFatigue(res) {
+    if (!res || res.fatDone || res.userSide == null || res.userSide < 0 || !res.minutes) return;
+    const s = res.userSide;
+    for (const sid in res.minutes[s]) {
+      const p = W.P[sid]; if (!p) continue;
+      const e = res.end && res.end[s] ? res.end[s][sid] : null, f = res.minutes[s][sid] / 90;
+      p.cd = clamp(e != null ? e : p.cd - 20 * f, 5, 100); p.pw = (p.pw || 0) + 1;
+    }
+    res.fatDone = true;
   }
   function applyResult(L, h, a, hg, ag) {
     const H = L.tbl[h], A = L.tbl[a];
@@ -776,43 +848,75 @@
     const t = userTeam(); const p = W.P[pid];
     if (!p || p.t !== t.id) return { err: '내 선수가 아닙니다.' };
     if (p.loan) return { err: '임대 선수는 방출할 수 없습니다. 시즌 종료 후 원소속팀으로 복귀합니다.' };
-    if (t.pl.length <= 18) return { err: '선수단 최소 인원(18명)을 유지해야 합니다.' };
-    t.pl = t.pl.filter(x => x !== pid); delete W.P[pid]; t.lu = null; delete t.pt[pid];
-    log(`📤 ${p.n} 방출`);
+    if (!p.r2 && t.pl.length <= 18) return { err: '선수단 최소 인원(18명)을 유지해야 합니다.' };
+    removeFromTeam(p); makeFA(p);   // 계약을 해지한 선수는 무소속이 된다
+    W.tw.neg.filter(n => n.pid === pid && negActive(n)).forEach(n => { n.status = 'cancelled'; });
+    log(`📤 ${p.n} 방출 (무소속이 됨)`);
     return {};
   }
 
   /* ---------- 훈련/주간 처리 ---------- */
+  // 성장·노화로 능력치가 바뀐 기록 (화면에 ▲/▼ 표시). 최근 3주 안의 변화만 화살표로 보인다
+  function markChg(p, i, d) {
+    p.dl = p.dl || {};
+    const o = p.dl[i];
+    if (o && W.tick - o.t <= 2) { o.d += d; o.t = W.tick; } else p.dl[i] = { d, t: W.tick };
+    if (p.dl[i].d === 0) delete p.dl[i];
+  }
+  const attrUsed = (p, i) => !((p.p !== 0 && i >= 15) || (p.p === 0 && i < 15 && !KEY[0].includes(i) && ATTR_GROUP[i] !== 2 && i !== 10));
   function trainWeek() {
     const t = userTeam(), pl = W.u.train, I = pl.i - 1;
+    W.tick = (W.tick || 0) + 1;
     const changes = [];
+    let nUp = 0, nDn = 0;
     const slots = pl.a === pl.b ? [pl.a] : [pl.a, pl.b];
     const share = slots.length === 1 ? 1 : 0.5;
     const cats = slots.map(i => TRAIN[i]);
     const hasRec = cats.some(c => c.rec);
     let cohGain = 0;
-    t.pl.forEach(id => {
+    t.pl.concat(t.res || []).forEach(id => {
       const p = W.P[id];
       if (!p.xp) p.xp = {};
       // 회복
       let rec = 22 + (hasRec ? 8 : 0) - 8 * Math.max(0, (p.pw || 0) - 1); p.pw = 0;
-      if (p.inj) { p.inj--; if (p.inj === 0) log(`💪 ${p.n} 부상에서 복귀했습니다.`); p.cd = clamp(p.cd + rec * 0.5, 0, 100); return; }
-      const ageF = p.a <= 18 ? 1.5 : p.a <= 21 ? 1.3 : p.a <= 25 ? 1.0 : p.a <= 29 ? 0.7 : p.a <= 32 ? 0.35 : 0.15;
-      const devF = 0.6 + 0.04 * p.dv, room = clamp((p.pa - p.ca) / 30, 0.05, 1.2), prF = 0.8 + 0.02 * p.pr;
-      cats.forEach(cat => {
-        if (cat.rec) return;
-        const eff = cat.pos.includes(p.p) ? 1 : 0.25;
-        cat.attrs.forEach(ai => {
-          if (p.p !== 0 && ai >= 15) return;
-          let g = 0.034 * INT_MULT[I] * eff * share * ageF * devF * room * prF;
-          if (p.ft === ai) g *= 1.8;
-          p.xp[ai] = (p.xp[ai] || 0) + g;
-          if (p.cd < 35 && pl.i >= 4 && ATTR_GROUP[ai] === 2) p.xp[ai] -= 0.04;
-          if (p.xp[ai] >= 1) { p.xp[ai] -= 1; p.at[ai] = r1(Math.min(20, p.at[ai] + 1)); changes.push(`${p.n} ${ATTRS[ai]} +1`); }
-          else if (p.xp[ai] <= -1) { p.xp[ai] += 1; p.at[ai] = r1(Math.max(1, p.at[ai] - 1)); changes.push(`${p.n} ${ATTRS[ai]} -1 (과훈련)`); }
+      const wasInj = p.inj > 0;
+      if (p.inj) { p.inj--; if (p.inj === 0) log(`💪 ${p.n} 부상에서 복귀했습니다.`); p.cd = clamp(p.cd + rec * 0.5, 0, 100); }
+      else {
+        const ageF = p.a <= 18 ? 1.5 : p.a <= 21 ? 1.3 : p.a <= 25 ? 1.0 : p.a <= 29 ? 0.7 : p.a <= 32 ? 0.35 : 0.15;
+        const devF = 0.6 + 0.04 * p.dv, room = clamp((p.pa - p.ca) / 30, 0.05, 1.2), prF = 0.8 + 0.02 * p.pr;
+        cats.forEach(cat => {
+          if (cat.rec) return;
+          const eff = (cat.pos.includes(p.p) ? 1 : 0.25) * (p.r2 ? 0.8 : 1);
+          cat.attrs.forEach(ai => {
+            if (p.p !== 0 && ai >= 15) return;
+            let g = 0.034 * INT_MULT[I] * eff * share * ageF * devF * room * prF;
+            if (p.ft === ai) g *= 1.8;
+            p.xp[ai] = (p.xp[ai] || 0) + g;
+            if (p.cd < 35 && pl.i >= 4 && ATTR_GROUP[ai] === 2) p.xp[ai] -= 0.04;
+          });
         });
-      });
+      }
+      // 시즌 중 성장·노화: 나이 곡선 + 매주 기복. 성장한다고 무조건 오르지 않고 내리기도 한다
+      const room2 = clamp((p.pa - p.ca) / 35, 0.05, 1.3), injF = 1 - Math.min(0.6, p.si * 0.12);
+      const gp = (p.ap || 0) + 0.7 * (p.rap || 0), expG = Math.max(1, W.week * 0.6);
+      const ptF = p.a <= 21 ? 0.75 + 0.5 * Math.min(1, gp / expG) : 1;
+      const prDec = 1.1 - 0.015 * p.pr;
+      for (let i = 0; i < 17; i++) {
+        if (!attrUsed(p, i)) continue;
+        let b = ageDelta(ATTR_GROUP[i], p.a);
+        if (b > 0) b *= room2 * (0.6 + 0.04 * p.dv) * (p.gl || 1) * injF * ptF; else b *= prDec;
+        if (p.inj && ATTR_GROUP[i] === 2) b -= 0.6;   // 부상 중에는 신체 능력이 조금씩 떨어진다
+        p.xp[i] = (p.xp[i] || 0) + b / 40 + norm() * 0.2;
+        if (p.xp[i] >= 1) {
+          p.xp[i] -= 1;
+          if (p.at[i] < 20) { p.at[i] = r1(Math.min(20, p.at[i] + 1)); markChg(p, i, 1); nUp++; if (!p.r2) changes.push(`${p.n} ${ATTRS[i]} ▲`); }
+        } else if (p.xp[i] <= -1) {
+          p.xp[i] += 1;
+          if (p.at[i] > 1) { p.at[i] = r1(Math.max(1, p.at[i] - 1)); markChg(p, i, -1); nDn++; if (!p.r2) changes.push(`${p.n} ${ATTRS[i]} ▼`); }
+        }
+      }
       refresh(p);
+      if (wasInj) return;
       p.cd = clamp(p.cd - INT_DRAIN[I] + rec, 5, 100);
       // 훈련 중 부상
       const inj = 0.0022 * INT_INJ[I] * (0.5 + p.ip / 10) * (p.cd < 50 ? 1.8 : 1) * (hasRec ? 0.6 : 1);
@@ -824,7 +928,51 @@
     if (key !== W.u.lastTac) { t.coh = clamp(t.coh - 8, 20, 100); W.u.lastTac = key; }
     else t.coh = clamp(t.coh + 1.2 + cohGain, 20, 100);
     W.u.chg = changes;
-    if (changes.length) log(`📈 훈련 결과: ${changes.slice(0, 6).join(', ')}${changes.length > 6 ? ` 외 ${changes.length - 6}건` : ''}`);
+    if (nUp || nDn) log(`📈 능력치 변화 ▲${nUp} ▼${nDn}: ${changes.slice(0, 5).join(', ')}${changes.length > 5 ? ` 외 ${changes.length - 5}건` : ''}`);
+  }
+  /* 2군 일정: 리그는 없지만 매주 수요일(1군 주말 경기 3일 전)에 경기가 있고, 4주마다 한 주는 쉰다 */
+  function resFixture(team, week) {
+    if (week % 4 === 0 || week > MAX_WEEKS) return null;
+    const L = W.lg[team.cid] && W.lg[team.cid][team.tier];
+    if (!L) return null;
+    const others = L.teams.filter(id => id !== team.id);
+    return { w: week, opp: others[(week * 7 + team.id) % others.length], home: (week + team.id) % 2 === 0 };
+  }
+  function reserveMatchday() {
+    if (!W.u || W.state !== 'play') return;
+    const t = userTeam(), f = resFixture(t, W.week);
+    if (!f || (W.u.rlast && W.u.rlast.s === W.season && W.u.rlast.w === W.week)) return;
+    const avail = (t.res || []).map(id => W.P[id]).filter(p => p && !p.inj);
+    // 체력이 남은 선수 위주로 선발 11명, 교체 3명이 뛴다
+    avail.sort((a, b) => ((b.cd >= 60) - (a.cd >= 60)) || (b.ca - a.ca));
+    const ids = [];
+    avail.forEach((p, k) => {
+      if (k >= 14) return;
+      const mins = k < 11 ? 90 : 25;
+      const loss = (mins / 90) * (15 + 7 * rnd()) * (1.3 - p.at[14] / 30);
+      p.cd = clamp(p.cd - loss, 5, 100); p.rap = (p.rap || 0) + 1;
+      p.rg = { s: W.season, w: W.week, m: mins, loss: Math.round(loss) };
+      ids.push(p.id);
+      if (rnd() < 0.006 * (mins / 90) * (0.5 + p.ip / 10)) setInjury(p, t, true);
+    });
+    W.u.rlast = { s: W.season, w: W.week, opp: f.opp, home: f.home, ids };
+  }
+  // 1군 ↔ 2군 이동 (이적시장과 관계없이 언제든 가능)
+  function toReserve(pid) {
+    const t = userTeam(), p = W.P[pid];
+    if (!p || p.t !== t.id || p.r2) return { err: '1군 선수가 아닙니다.' };
+    if (p.loan) return { err: '임대로 온 선수는 2군으로 내릴 수 없습니다.' };
+    if (t.pl.length <= 16) return { err: '1군은 최소 16명을 유지해야 합니다.' };
+    if ((t.res || []).length >= RES_MAX) return { err: `2군은 최대 ${RES_MAX}명입니다.` };
+    t.pl = t.pl.filter(x => x !== pid); t.res.push(pid); p.r2 = true; delete t.pt[pid];
+    return {};
+  }
+  function toFirst(pid) {
+    const t = userTeam(), p = W.P[pid];
+    if (!p || p.t !== t.id || !p.r2) return { err: '2군 선수가 아닙니다.' };
+    if (t.pl.length >= 32) return { err: '1군이 가득 찼습니다 (최대 32명).' };
+    t.res = t.res.filter(x => x !== pid); t.pl.push(pid); p.r2 = false; fixNumbers(t);
+    return {};
   }
 
   /* ---------- 주 진행 ---------- */
@@ -871,14 +1019,17 @@
     W.teams.forEach(tm => {
       if (tm.id === t.id) return;
       tm.pl.forEach(id => { const p = W.P[id]; if (p.inj) p.inj--; });
+      (tm.res || []).forEach(id => { const p = W.P[id]; if (p.inj) p.inj--; });
     });
     clAfterWeek(W.week);
     trainWeek();
+    negTick();   // 시즌 중 협상: 1주 = 1턴
     W.u.att.s = 2; W.u.att.j = 3;
     W.week++;
     if (W.week === 20 && W.state === 'play') { startWindow('mid'); return; }   // 시즌 19번째 경기가 끝나면 시즌 중 이적시장
     const maxW = Math.max(...COUNTRIES.map(c => Math.max(...W.lg[c.id].map(L => L.fx.length))));
-    if (W.week > maxW) { W.state = 'seasonEnd'; buildReport(); }
+    if (W.week > maxW) { W.state = 'seasonEnd'; buildReport(); return; }
+    reserveMatchday();
   }
 
   /* ---------- 시즌 종료 ---------- */
@@ -896,17 +1047,18 @@
     // 정신
     if (age <= 18) return 0.9; if (age <= 21) return 0.8; if (age <= 25) return 0.5; if (age <= 29) return 0.25; if (age <= 33) return 0.05; return -0.3;
   }
-  function developPlayer(p, isUserTeam) {
+  // weekly=true: 사용자 팀 선수는 시즌 중 매주 성장·노화를 반영했으므로 시즌 말에는 잠재력 정리만 한다
+  function developPlayer(p, weekly) {
     const growthLuck = clamp(1 + norm() * 0.35, 0.2, 1.8);
     const room = clamp((p.pa - p.ca) / 35, 0.05, 1.3);
     const injF = 1 - Math.min(0.6, p.si * 0.12);
-    const ptF = (p.a <= 21 && p.t >= 0) ? (0.75 + 0.5 * Math.min(1, p.ap / 30)) : 1;
+    const ptF = (p.a <= 21 && p.t >= 0) ? (0.75 + 0.5 * Math.min(1, (p.ap + (p.r2 ? 18 : 0)) / 30)) : 1;
     const prDec = 1.1 - 0.015 * p.pr;
-    for (let i = 0; i < 17; i++) {
+    for (let i = 0; i < 17 && !weekly; i++) {
       if (p.p !== 0 && i >= 15) continue;
       if (p.p === 0 && i < 15 && !KEY[0].includes(i) && ATTR_GROUP[i] !== 2 && i !== 10) { continue; }
       let b = ageDelta(ATTR_GROUP[i], p.a);
-      if (b > 0) b *= room * (0.6 + 0.04 * p.dv) * growthLuck * injF * ptF * (isUserTeam ? 1 : 1);
+      if (b > 0) b *= room * (0.6 + 0.04 * p.dv) * growthLuck * injF * ptF;
       else b *= prDec;
       b += norm() * 0.3;
       p.at[i] = r1(clamp(p.at[i] + b, 1, 20));
@@ -920,6 +1072,79 @@
     const p = genPlayer(team.lv, pos, ri(16, 18), (foreign || !c) ? pick(['en', 'fr', 'de', 'pt', 'es', 'it', 'af', 'sa']) : c.reg);
     p.t = team.id; addPlayer(p); team.pl.push(p.id); fixNumbers(team);
     return p;
+  }
+  function expRanks(L) { const o = {}; L.teams.slice().sort((a, b) => W.teams[b].lv - W.teams[a].lv).forEach((id, i) => { o[id] = i; }); return o; }
+  // 리그 상금: 부(tier)와 국가 계수에 비례, 순위가 높을수록 크게. 우승 보너스 +50%, 승격 보너스 별도
+  const LG_PRIZE = [60, 18, 6, 2.5], PROMO_PRIZE = [0, 15, 5, 2];
+  function leaguePrize(tm, rk, N) {
+    const c = COUNTRIES.find(x => x.id === tm.cid); if (!c) return { prize: 0, promo: 0 };
+    const base = LG_PRIZE[tm.tier] * c.coef;
+    const prize = r1(base * (0.2 + 0.8 * Math.pow((N - 1 - rk) / (N - 1), 1.5)) + (rk === 0 ? base * 0.5 : 0));
+    const promo = (tm.tier > 0 && rk < c.ud[tm.tier - 1]) ? r1(PROMO_PRIZE[tm.tier] * c.coef) : 0;
+    return { prize, promo };
+  }
+  function mgrName(tm) {
+    if (W.u && tm.id === W.u.team) return W.u.name;
+    if (!tm.mgr) { const c = COUNTRIES.find(x => x.id === tm.cid); tm.mgr = genName(c ? c.reg : pick(['en', 'fr', 'de', 'pt', 'es', 'it'])); }
+    return tm.mgr;
+  }
+  // 올해의 감독상: 우승팀이 아니라 기대(시즌 시작 전력 순위)보다 잘한 팀 중에서 추첨. 많이 넘어설수록 뽑힐 확률이 크다
+  function managerAwards() {
+    const out = [];
+    COUNTRIES.forEach(c => W.lg[c.id].forEach((L, tier) => {
+      const tbl = sortedTable(L), exp = L.exp || expRanks(L);
+      const cand = tbl.map((id, rk) => {
+        let over = exp[id] - rk;
+        if (tier > 0 && rk < c.ud[tier - 1]) over += 2;   // 승격
+        if (rk === 0) over += 1.5;
+        return { id, rk, e: exp[id], over };
+      }).filter(x => x.over > 0);
+      let win = cand[0] || { id: tbl[0], rk: 0, e: exp[tbl[0]], over: 0 };
+      if (cand.length) {
+        let tot = 0; cand.forEach(x => { x.w = x.over * x.over; tot += x.w; });
+        let r = rnd() * tot; for (const x of cand) { r -= x.w; if (r <= 0) { win = x; break; } }
+      }
+      const tm = W.teams[win.id];
+      out.push({ cid: c.id, tier, team: tm.id, tname: tm.name, mgr: mgrName(tm), rank: win.rk + 1, exp: win.e + 1 });
+    }));
+    return out;
+  }
+  // 시즌 평가 점수(베스트 일레븐 선정용): 능력 + 득점·도움 + 출전 + 팀 순위
+  function seasonScore(p, rk, N) {
+    const gw = [0, 1.5, 1.1, 0.8][p.p];
+    return p.ca * 0.12 + p.g * gw + (p.as || 0) * 0.7 + p.ap * 0.06 + 4 * (1 - rk / Math.max(1, N - 1));
+  }
+  function bestEleven(L) {
+    const tbl = sortedTable(L), N = tbl.length, all = [];
+    tbl.forEach((id, rk) => {
+      const tm = W.teams[id], games = L.tbl[id].p;
+      tm.pl.forEach(pid => { const p = W.P[pid]; if (!p || p.ap < games * 0.4) return; all.push({ p, tm, sc: seasonScore(p, rk, N) }); });
+    });
+    all.sort((a, b) => b.sc - a.sc);
+    const used = new Set(), take = (pos, n) => { const o = []; for (const x of all) { if (o.length >= n) break; if (x.p.p === pos && !used.has(x.p.id)) { used.add(x.p.id); o.push(x); } } return o; };
+    const rec = x => ({ id: x.p.id, n: x.p.n, pos: POS[x.p.p], a: x.p.a, t: x.tm.name, g: x.p.g, as: x.p.as || 0, ap: x.p.ap, sc: r1(x.sc) });
+    const xi = take(0, 1).concat(take(1, 4), take(2, 3), take(3, 3)).map(rec);   // 4-3-3
+    const subs = take(0, 1).concat(take(1, 2), take(2, 2), take(3, 2)).map(rec);   // 후보 7명
+    return { form: '4-3-3', xi, subs };
+  }
+  // 시즌 기록 보관: 내 리그의 최종 순위표·득점·도움·베스트 일레븐, 모든 리그 우승팀과 올해의 감독
+  function archiveSeason(awards) {
+    const t = userTeam(), L = W.lg[t.cid][t.tier], tbl = sortedTable(L), N = tbl.length;
+    const players = [];
+    L.teams.forEach(id => W.teams[id].pl.forEach(pid => { const p = W.P[pid]; if (p) players.push({ n: p.n, t: W.teams[id].name, g: p.g, as: p.as || 0, ap: p.ap }); }));
+    const topG = players.filter(x => x.g > 0).sort((a, b) => b.g - a.g || a.ap - b.ap).slice(0, 5);
+    const topA = players.filter(x => x.as > 0).sort((a, b) => b.as - a.as || a.ap - b.ap).slice(0, 5);
+    const entry = {
+      season: W.season, cid: t.cid, tier: t.tier, lname: COUNTRIES.find(c => c.id === t.cid).name + ' ' + (t.tier + 1) + '부',
+      table: tbl.map((id, i) => { const r = L.tbl[id]; return { id, n: W.teams[id].name, rk: i + 1, p: r.p, w: r.w, d: r.d, l: r.l, gf: r.gf, ga: r.ga, pts: r.pts }; }),
+      topG, topA, best: bestEleven(L),
+      me: { team: t.name, rank: tbl.indexOf(t.id) + 1, N },
+      champs: COUNTRIES.map(c => ({ c: c.name, teams: W.lg[c.id].map(LL => W.teams[sortedTable(LL)[0]].name) })),
+      awards: awards.map(a => ({ c: COUNTRIES.find(x => x.id === a.cid).name, tier: a.tier + 1, tname: a.tname, mgr: a.mgr, rank: a.rank, exp: a.exp, me: a.team === t.id })),
+      cl: W.cl && W.cl.champion != null ? W.teams[W.cl.champion].name : null
+    };
+    W.archive = W.archive || []; W.archive.push(entry);
+    return entry;
   }
   function buildReport() {
     const t = userTeam(); const L = W.lg[t.cid][t.tier];
@@ -937,38 +1162,76 @@
     W.report = { season: W.season, rank, N, outcome, ok, target: W.u.targetRank, pts: L.tbl[t.id].pts, champ: W.teams[tbl[0]].name, scorers: top.slice(0, 5),
       cl: (W.cl && W.cl.teams.includes(t.id)) ? { stage: W.cl.stage[t.id], name: CL_STAGE_NAME[W.cl.stage[t.id]], champ: W.cl.champion != null ? W.teams[W.cl.champion].name : null } : null };
     W.u.reports.push({ season: W.season, team: t.name, tier: t.tier + 1, rank, outcome });
+    const awards = managerAwards();
+    const mine = awards.find(a => a.cid === t.cid && a.tier === t.tier);
+    const ent = archiveSeason(awards);
+    const lp = leaguePrize(t, rank - 1, N);
+    W.report.prize = { league: lp.prize, promo: lp.promo, cl: W.cl && W.cl.teams.includes(t.id) ? W.cl.prizeOf && W.cl.prizeOf[t.id] || 0 : 0 };
+    W.report.moy = mine; W.report.won = awards.filter(a => a.team === t.id).length > 0;
+    W.report.best = ent.best; W.report.topA = ent.topA; W.report.topG = ent.topG;
+    if (W.report.won) { W.u.awards = W.u.awards || []; W.u.awards.push({ s: W.season, team: t.name }); log(`🏅 ${W.season}시즌 올해의 감독상 수상! (기대 ${mine.exp}위 → ${mine.rank}위)`); }
+    else log(`🏅 ${W.season}시즌 올해의 감독상: ${mine.mgr} (${mine.tname}, 기대 ${mine.exp}위 → ${mine.rank}위)`);
   }
   function nextSeason() {
     W.prevTop = {};
     COUNTRIES.forEach(c => { W.prevTop[c.id] = sortedTable(W.lg[c.id][0]).slice(0, 4); });
     const t = userTeam();
-    // 1) 선수 노화/성장/은퇴 (모든 팀)
+    // 0) 계약 만료: 재계약하지 않은 선수는 팀을 떠나 무소속이 된다
+    contractExpiry();
+    // 1) 선수 노화/성장/은퇴 (모든 팀, 1군 + 2군)
     W.teams.forEach(tm => {
       const isU = tm.id === t.id;
       const retire = [];
-      tm.pl.forEach(id => {
+      tm.res = tm.res || [];
+      tm.pl.concat(tm.res).forEach(id => {
         const p = W.P[id];
         developPlayer(p, isU);
-        p.a++; p.si = Math.max(0, p.si - 0); p.ap = 0; p.g = 0; p.cd = 100; p.inj = Math.max(0, p.inj > 0 ? Math.min(p.inj, 6) : 0);
+        p.a++; p.ap = 0; p.rap = 0; p.g = 0; p.cd = 100; p.inj = Math.max(0, p.inj > 0 ? Math.min(p.inj, 6) : 0);
+        p.gl = clamp(1 + norm() * 0.35, 0.2, 1.8);
         if (p.xp) p.xp = {};
-        if (p.a >= 34 && (p.a >= 39 || rnd() < (p.a - 33) * 0.22)) retire.push(id);
+        if (!p.pend && p.a >= 34 && (p.a >= 39 || rnd() < (p.a - 33) * 0.22)) retire.push(id);
       });
-      retire.forEach(id => { const p = W.P[id]; if (isU) log(`👋 ${p.n} (${p.a}세) 은퇴`); tm.pl = tm.pl.filter(x => x !== id); delete W.P[id]; delete tm.pt[id]; });
-      // 유스 수혈 + 포지션 보충
+      retire.forEach(id => { const p = W.P[id]; if (isU) log(`👋 ${p.n} (${p.a}세) 은퇴`); removeFromTeam(p); delete W.P[id]; });
+      // 포지션 최소 인원 보충
       const cnt = [0, 0, 0, 0]; tm.pl.forEach(id => cnt[W.P[id].p]++);
       const min = [2, 6, 6, 4];
       for (let pos = 0; pos < 4; pos++) while (cnt[pos] < min[pos]) { genYouth(tm, pos); cnt[pos]++; }
-      const ny = isU ? 2 : 2;
-      for (let i = 0; i < ny; i++) { const y = genYouth(tm, pick([1, 2, 2, 3])); if (isU) log(`🌱 유스 승격: ${y.n} (${y.a}세, ${POS[y.p]})`); }
+      // 유스 입단은 2군으로
+      for (let i = 0; i < 2; i++) { const y = addReserve(tm, pick([1, 2, 2, 3]), ri(16, 18)); if (isU) log(`🌱 유스 입단(2군): ${y.n} (${y.a}세, ${POS[y.p]})`); }
       if (!isU) {
+        // AI: 2군에서 자란 선수를 1군으로 올리고, 23세가 넘도록 못 올라간 선수는 정리
+        const firstCA = tm.pl.map(id => W.P[id].ca).sort((a, b) => b - a);
+        const cut = firstCA[Math.min(17, firstCA.length - 1)] || 0;
+        tm.res.slice().forEach(id => {
+          const p = W.P[id];
+          if (p.a >= 20 && p.ca >= cut && tm.pl.length < 28) { tm.res = tm.res.filter(x => x !== id); tm.pl.push(id); p.r2 = false; }
+          else if (p.a >= 23) { removeFromTeam(p); delete W.P[id]; }
+        });
+        while (tm.pl.length < 22) {
+          const best = tm.res.map(id => W.P[id]).sort((a, b) => b.ca - a.ca)[0];
+          if (best) { tm.res = tm.res.filter(x => x !== best.id); tm.pl.push(best.id); best.r2 = false; } else genYouth(tm, pick([1, 2, 3]));
+        }
+        while (tm.res.length < RES_SIZE) addReserve(tm, pick([0, 1, 2, 2, 3]), ri(16, 18));
+        while (tm.res.length > RES_MAX) { const id = tm.res.shift(); removeFromTeam(W.P[id]); delete W.P[id]; }
         while (tm.pl.length > 28) {
-          let worst = null; tm.pl.forEach(id => { const p = W.P[id]; if (p.loan) return; /* 임대로 와 있는 선수는 정리 대상이 아님 */ if (!worst || valueOf(p) < valueOf(worst)) worst = p; });
+          let worst = null; tm.pl.forEach(id => { const p = W.P[id]; if (p.loan || p.pend) return; /* 임대로 와 있거나 이적이 확정된 선수는 정리 대상이 아님 */ if (!worst || valueOf(p) < valueOf(worst)) worst = p; });
           if (!worst) break;
           tm.pl = tm.pl.filter(x => x !== worst.id); delete W.P[worst.id];
         }
+        fixNumbers(tm);
       }
       tm.lu = null;
     });
+    // 무소속 선수도 나이를 먹고, 오래 소속을 못 찾거나 나이가 많으면 은퇴
+    W.fa = W.fa.filter(id => {
+      const p = W.P[id]; if (!p) return false;
+      developPlayer(p, false); p.a++; p.ap = 0; p.g = 0; p.cd = 100; p.inj = 0;
+      if (p.a >= 36 || W.season - p.fas >= 2) { delete W.P[id]; return false; }
+      return true;
+    });
+    if (W.fa.length > 400) { W.fa.sort((a, b) => W.P[b].ca - W.P[a].ca); W.fa.splice(400).forEach(id => delete W.P[id]); }
+    // 계약은 끝났지만 아직 합류 전인 해외 유망주
+    (W.pendIn || []).forEach(id => { const p = W.P[id]; if (p && p.t < 0) { developPlayer(p, false); p.a++; } });
     // 2) 풀 갱신
     CONTINENTS.forEach(ct => {
       const arr = W.pool[ct.id], keep = [];
@@ -978,16 +1241,19 @@
       });
       W.pool[ct.id] = keep; fillPool(ct.id, 500);
     });
-    W.u.seen = W.u.seen.filter(id => W.P[id]); W.u.evals = {}; for (const k in W.u.own) delete W.u.own[k];
+    W.u.seen = W.u.seen.filter(id => W.P[id]); W.u.evals = {}; W.u.refuse = {}; for (const k in W.u.own) delete W.u.own[k];
     // 3) 수익
     W.teams.forEach(tm => {
       if (tm.cid === 'RND') { tm.bud = r1(tm.bud + 10); return; }
       const L = W.lg[tm.cid][tm.tier];
       const rk = sortedTable(L).indexOf(tm.id);
-      const income = r1(8 + 70 * tm.lv * tm.lv + 10 * (1 - rk / L.teams.length) + (tm.tier === 3 ? 2 : 0));
+      const income = r1(8 + 70 * tm.lv * tm.lv + (tm.tier === 3 ? 2 : 0));   // 중계·관중 등 기본 수입
+      const pz = leaguePrize(tm, rk, L.teams.length), prize = r1(pz.prize + pz.promo);
       const wages = teamWages(tm);
-      tm.bud = r1(tm.bud + income - wages);
-      if (tm.id === t.id) { W.u.fin = { income, wages, net: r1(income - wages) }; log(`💶 시즌 정산: 수입 ${income}M − 연봉 지출 ${wages}M = ${r1(income - wages)}M`); }
+      tm.bud = r1(tm.bud + income + prize - wages);
+      // AI 구단은 쌓인 돈의 일부를 시설·운영에 쓴다(예산 무한 증가 방지). 상한 = 40 + 300 × 레벨², 넘는 금액의 절반을 지출
+      if (tm.id !== t.id) { const cap = 40 + 300 * tm.lv * tm.lv; if (tm.bud > cap) tm.bud = r1(cap + (tm.bud - cap) * 0.5); }
+      if (tm.id === t.id) { W.u.fin = { income, prize, wages, net: r1(income + prize - wages) }; log(`💶 시즌 정산: 기본 수입 ${income}M + 리그 상금 ${prize}M − 연봉 지출 ${wages}M = ${r1(income + prize - wages)}M`); }
     });
     // 임대 선수 복귀 (임대 기간은 한 시즌)
     for (const id in W.P) {
@@ -1052,42 +1318,99 @@
     return { swap: other ? other.n : null };
   }
 
-  /* ---------- 연봉 / 이적시장 (새 시즌 시작 전 10턴) ---------- */
+  /* ---------- 연봉 / 계약 / 이적시장 ---------- */
   const r2 = x => Math.round(x * 100) / 100;
-  function wageOf(p) { return p.w != null ? p.w : r2(0.05 + 0.06 * valueOf(p)); }
-  function teamWages(tm) { return r1(tm.pl.reduce((s, id) => s + wageOf(W.P[id]), 0)); }
+  function wageOf(p) { return p.w != null ? p.w : r2(marketWage(p) * 0.9); }
+  function teamWages(tm) { return r1(tm.pl.concat(tm.res || []).reduce((s, id) => s + wageOf(W.P[id]), 0)); }
   function wageDemand(p, buyer, seller) {
-    let w = 0.05 + 0.08 * valueOf(p);
+    let w = marketWage(p);
     if (seller && buyer.lv < seller.lv - 0.05) w *= 1.15;
     else if (seller && buyer.lv > seller.lv + 0.2) w *= 0.9;
-    if (p.a >= 31) w *= 0.9;
-    if (p.a <= 20) w *= 0.85;
     return r2(w);
   }
+  const yearsLeft = p => p.ce == null ? 0 : p.ce - W.season;   // 0 = 이번 시즌이 끝나면 만료
+  const preWin = () => W.state === 'transfer' && W.tw && W.tw.kind === 'pre';
+  // 새 계약의 마지막 시즌. 시즌 전 시장에서 맺은 계약은 다가오는 시즌부터 센다
+  const contractEnd = years => W.season + years - (preWin() ? 1 : 0);
+  // 협상은 이적시장 밖(시즌 중)에도 할 수 있다. 다만 계약된 선수는 다음 이적시장에 합류한다
+  const canNegotiate = () => W.state === 'transfer' || W.state === 'play';
+  const curMult = () => W.state === 'transfer' ? (W.tw.mult || 1) : 1.25;
   const negActive = n => n.status === 'pending' || n.status === 'counter' || n.status === 'open' || n.status === 'rejected';
+  const turnWord = () => W.state === 'transfer' ? '다음 턴' : '다음 주';
+  function removeFromTeam(p) {
+    const tm = W.teams[p.t]; if (!tm) return;
+    tm.pl = tm.pl.filter(x => x !== p.id); if (tm.res) tm.res = tm.res.filter(x => x !== p.id);
+    tm.lu = null; delete tm.pt[p.id];
+  }
+  // 시즌 종료 시 계약 만료 처리. 사용자 팀은 재계약하지 않은 선수가 모두 무소속이 된다
+  function contractExpiry() {
+    const uid = W.u ? W.u.team : -1;
+    W.teams.forEach(tm => {
+      const ranked = tm.pl.slice().sort((a, b) => W.P[b].ca - W.P[a].ca);
+      tm.pl.concat(tm.res || []).forEach(id => {
+        const p = W.P[id];
+        if (!p || p.pend || p.ce == null || p.ce > W.season) return;
+        if (p.loan) { p.ce = W.season + 1; return; }   // 임대 중인 선수는 1년 자동 연장(단순화)
+        if (tm.id !== uid) {
+          const rk = ranked.indexOf(id);
+          const pr = p.r2 ? 0.45 : (rk >= 0 && rk < 16 && p.a <= 32) ? 0.8 : 0.3;
+          if (rnd() < pr) { p.ce = W.season + ri(1, 4); p.w = r2(marketWage(p) * (0.7 + 0.2 * rnd())); return; }
+          if (p.r2 || p.a >= 35 || p.ca < 40) { removeFromTeam(p); delete W.P[id]; return; }
+        } else log(`📄 ${p.n} 계약 만료 — 재계약하지 않아 무소속으로 떠났습니다.`);
+        removeFromTeam(p); makeFA(p);
+      });
+    });
+  }
   // kind: 'pre' = 시즌 시작 전(20턴), 'mid' = 시즌 19번째 경기 후(10턴, 구단들이 선수를 내놓길 꺼려 요구액이 높음)
   function startWindow(kind) {
     kind = kind || 'pre';
     W.winIdx = (W.winIdx || 0) + 1;
     W.state = 'transfer';
-    W.tw = { turn: 1, max: kind === 'mid' ? 10 : 20, kind, mult: kind === 'mid' ? 1.25 : 1, neg: [], inbox: [], nid: 1, loanList: [], saleList: [], recs: [] };
+    const prev = W.tw;
+    W.tw = { turn: 1, max: kind === 'mid' ? 10 : 20, kind, mult: kind === 'mid' ? 1.25 : 1, neg: prev ? prev.neg.filter(negActive) : [], inbox: [], nid: prev ? prev.nid : 1, loanList: [], saleList: [], recs: [] };
     W.u.att = { s: 2, j: 3 };
+    arrivals();
     genRecs();
     genInbox();
     log(kind === 'mid'
       ? '💱 시즌 중 이적시장이 열렸습니다 (10턴). 시즌 중이라 구단들이 선수를 내놓길 꺼려 요구액이 높습니다.'
       : '💱 이적시장이 열렸습니다. 새 시즌 시작까지 20턴입니다.');
   }
-  // 협상 불가 사유 (임대 중 선수, 발굴하지 않았거나 이번 시장에서 막 발굴한 무소속 선수)
+  // 시즌 중에 계약한 선수(또는 이번 시장에서 막 발굴해 계약한 유망주)는 다음 이적시장이 열릴 때 합류한다
+  function arrivals() {
+    const t = userTeam();
+    (W.pendIn || []).forEach(id => {
+      const p = W.P[id];
+      if (!p || !p.pend) return;
+      const d = p.pend;
+      let from = null;
+      if (p.t >= 0) { from = W.teams[p.t]; removeFromTeam(p); }
+      else if (p.c && W.pool[p.c]) W.pool[p.c] = W.pool[p.c].filter(x => x !== id);
+      delete p.c; delete p.pend;
+      const full = t.pl.length >= 32;
+      p.t = t.id; p.sn = null; p.cd = Math.max(p.cd, 80); p.r2 = full;
+      (full ? t.res : t.pl).push(id);
+      if (d.loan) p.loan = { from: from ? from.id : -1 }; else { p.w = d.w; p.ce = d.ce; }
+      log(`🛬 ${p.n}이(가) 합류했습니다${d.loan ? ' (임대)' : ''}${full ? ' — 1군이 가득 차 2군에 등록' : ''}.`);
+    });
+    W.pendIn = [];
+    fixNumbers(t); t.lu = null;
+  }
+  // 계약하면 바로 합류하는지('now'), 다음 이적시장에 합류하는지('next')
+  function joinTiming(p) {
+    if (p.fa) return 'now';                         // 무소속은 이적시장과 관계없이 바로
+    if (W.state !== 'transfer') return 'next';      // 시즌 중 계약은 다음 이적시장에 합류
+    if (p.t < 0 && (W.u.found || {})[p.id] >= (W.winIdx || 0)) return 'next';   // 이번 시장에서 발굴한 유망주
+    return 'now';
+  }
+  // 협상 불가 사유
   function negBlock(pid) {
     const p = typeof pid === 'object' ? pid : W.P[pid];
     if (!p) return '선수를 찾을 수 없습니다.';
+    if (!canNegotiate()) return '시즌 정산 중에는 협상할 수 없습니다.';
+    if (p.pend) return '이미 계약을 마치고 다음 이적시장 합류를 기다리는 선수입니다.';
     if (p.loan) return '임대 중인 선수는 이적 협상을 할 수 없습니다.';
-    if (p.t < 0) {
-      const f = (W.u.found || {})[p.id];
-      if (f === undefined) return '스카우터가 발굴한 선수만 협상할 수 있습니다. 스카우팅 탭에서 탐색하세요.';
-      if (f >= (W.winIdx || 0)) return '이번 이적시장 중에 발굴한 선수는 다음 이적시장부터 협상할 수 있습니다.';
-    }
+    if (p.t < 0 && !p.fa && (W.u.found || {})[p.id] === undefined) return '스카우터가 발굴한 선수만 협상할 수 있습니다. 스카우팅 탭에서 탐색하세요.';
     return null;
   }
   function twSaleList(pid) {
@@ -1122,7 +1445,7 @@
     const cand = [];
     W.teams.forEach(tm => {
       if (tm.cid === 'RND' || tm.id === t.id) return;
-      tm.pl.forEach(id => { const p = W.P[id]; if (p.loan) return; cand.push({ p, ca: p.ca + norm() * sc * 0.6, pa: p.pa + norm() * sp * 0.6, v: valueOf(p) }); });
+      tm.pl.forEach(id => { const p = W.P[id]; if (p.loan || p.pend) return; cand.push({ p, ca: p.ca + norm() * sc * 0.6, pa: p.pa + norm() * sp * 0.6, v: valueOf(p) }); });
     });
     const used = new Set();
     const mk = (key, name, desc, filter, sortFn, why) => {
@@ -1140,7 +1463,7 @@
         (c, k) => c.p.a <= 22 && c.pa >= avg + 8 && c.v <= bud * 0.5 * k, (a, b) => b.pa - a.pa, c => `${c.p.a}세 · 잠재력 높음`),
       mk('value', '가성비 영입', '몸값에 비해 능력이 좋은 선수',
         (c, k) => c.ca >= avg - 6 && c.v <= bud * 0.12 * k, (a, b) => b.ca - a.ca, c => '몸값 대비 능력 우수'),
-      mk('vet', '베테랑 보강', '경험 많은 29세 이상 즉시 전력',
+      mk('vet', '베테랑 보강', '경험 많은 29세 이상 즉시 전력 (이적료는 싸지만 연봉은 높은 편)',
         (c, k) => c.p.a >= 29 && c.ca >= avg - 2 && c.v <= bud * 0.3 * k, (a, b) => b.ca - a.ca, c => `${c.p.a}세 · 경험 풍부`),
       mk('need', `약점 포지션 보강 (${POS[weak]})`, '우리 팀에서 상대적으로 약한 포지션을 메울 선수',
         (c, k) => c.p.p === weak && c.ca >= avg - 2 && c.v <= bud * 0.6 * k, (a, b) => b.ca - a.ca, c => `${POS[weak]} 보강 · 팀 평균 대비 ${d(c)}`)
@@ -1158,41 +1481,91 @@
     }
     return e.v;
   }
+  // 구단의 판매 거부: 팀 핵심 선수이고 계약이 많이 남았을수록 금액과 관계없이 팔지 않는다 (반 시즌 동안 같은 결정 유지)
+  function refuseChance(p) {
+    const tm = W.teams[p.t], rank = tm.pl.filter(i => W.P[i].ca > p.ca).length, yl = yearsLeft(p);
+    let pr = rank < 3 ? 0.85 : rank < 6 ? 0.55 : rank < 11 ? 0.25 : 0;
+    pr *= yl >= 3 ? 1 : yl === 2 ? 0.75 : yl === 1 ? 0.3 : 0.05;
+    if (!preWin()) pr = Math.min(0.95, pr * 1.15);
+    return pr;
+  }
+  function refuseDecision(p) {
+    W.u.refuse = W.u.refuse || {};
+    const k = W.season * 2 + (W.week >= 20 ? 1 : 0), o = W.u.refuse[p.id];
+    if (o && o.k === k) return o.r;
+    const r = rnd() < refuseChance(p);
+    W.u.refuse[p.id] = { k, r };
+    return r;
+  }
   function enterPlayerStage(n) {
-    const p = W.P[n.pid], t = userTeam(), seller = p.t >= 0 ? W.teams[p.t] : null;
-    n.stage = 'player'; n.status = 'open'; n.offerW = null; n.rej = 0;
-    n.dem = { w: r2(wageDemand(p, t, seller) * (0.95 + 0.3 * rnd()) * (p.t < 0 ? 0.85 : 1)), y: p.a <= 22 ? 5 : p.a <= 28 ? 4 : p.a <= 31 ? 2 : 1 };
+    const p = W.P[n.pid], t = userTeam(), seller = p.t >= 0 && p.t !== t.id ? W.teams[p.t] : null;
+    n.stage = 'player'; n.status = 'open'; n.offerW = null; n.rej = 0; n.rounds = 0; n.cc = 0;
+    let w = wageDemand(p, t, seller) * (0.95 + 0.3 * rnd());
+    if (p.t < 0 && !p.fa && (W.u.found || {})[p.id] !== undefined) w *= 0.85;   // 발굴해 준 구단으로 가고 싶어 한다
+    if (n.kind === 'renew' && p.a < 30) w = Math.max(w, wageOf(p) * 1.05);     // 전성기 전 선수는 연봉 삭감을 받아들이지 않는다
+    w = r2(Math.max(0.05, w));
+    const flex = rnd() < 0.7;
+    n.dem = { ask: w, ask0: w, flex, floor: flex ? r2(w * (0.85 + 0.08 * rnd())) : w, y: p.a <= 22 ? 5 : p.a <= 28 ? 4 : p.a <= 31 ? 2 : 1 };
   }
   function twStart(pid, fee, kind) {
-    if (W.state !== 'transfer') return { err: '이적시장 기간이 아닙니다.' };
+    if (!canNegotiate()) return { err: '시즌 정산 중에는 협상할 수 없습니다.' };
     const p = W.P[pid], t = userTeam();
     if (!p || p.t === t.id) return { err: '협상할 수 없는 선수입니다.' };
-    if (p.loan && kind !== 'loan') return { err: '임대 중인 선수는 이적 협상을 할 수 없습니다.' };
-    if (kind !== 'loan') { const nb = negBlock(p); if (nb) return { err: nb }; }
-    if (kind === 'loan') { const why = loanBlock(p); if (why) return { err: why }; }
+    if (kind === 'loan') { const why = loanBlock(p) || (p.pend ? '이미 계약된 선수입니다.' : null); if (why) return { err: why }; }
+    else { const nb = negBlock(p); if (nb) return { err: nb }; }
     if (W.tw.neg.some(n => n.pid === pid && negActive(n))) return { err: '이미 협상 중인 선수입니다.' };
-    if (W.tw.neg.filter(negActive).length >= 6) return { err: '동시에 협상할 수 있는 선수는 6명까지입니다.' };
-    if (t.pl.length >= 32) return { err: '선수단이 가득 찼습니다 (최대 32명). 먼저 방출하세요.' };
-    const n = { id: W.tw.nid++, pid, turn: W.tw.turn, rej: 0, msg: '', sel: null };
+    if (W.tw.neg.filter(negActive).length >= 8) return { err: '동시에 협상할 수 있는 선수는 8명까지입니다.' };
+    if (t.pl.length >= 32 && (t.res || []).length >= RES_MAX) return { err: '1군과 2군이 모두 가득 찼습니다. 먼저 정리하세요.' };
+    const n = { id: W.tw.nid++, pid, turn: W.tw.turn, rej: 0, rounds: 0, cc: 0, msg: '', sel: null };
     if (kind === 'loan') n.kind = 'loan';
-    if (p.t < 0) {
-      n.fee = r1(valueOf(p) * 0.15); enterPlayerStage(n);
-      n.msg = '스카우터가 지난 시장 이전에 발굴한 선수입니다. 우선 협상권으로 에이전트 비용이 절반으로 줄고 선수가 연봉을 낮춰 받아들입니다.';
+    if (p.fa) {
+      n.fa = true; n.fee = 0; enterPlayerStage(n);
+      n.msg = '무소속 선수라 이적료 없이 개인 계약만 하면 됩니다. 계약하면 이적시장과 관계없이 바로 합류합니다.';
     } else {
       if (!(fee > 0)) return { err: '제안 이적료를 입력하세요.' };
       if (fee > t.bud) return { err: '예산을 초과하는 제안입니다.' };
-      const seller = W.teams[p.t];
-      if (seller.pl.length <= 20) return { err: '상대 구단이 선수단 부족으로 협상을 거부했습니다.' };
-      const top = seller.pl.map(i => W.P[i]).sort((a, b) => b.ca - a.ca).slice(0, 3).some(x => x.id === pid);
-      n.stage = 'club'; n.status = 'pending'; n.offer = r1(fee);
-      n.ask = r1(valueOf(p) * (1.1 + 0.4 * rnd()) * (top ? 1.2 : 1)); n.sel = p.t;
-      if (kind === 'loan') {
-        const rank = seller.pl.filter(i => W.P[i].ca > p.ca).length;
-        n.ask = r1(valueOf(p) * 0.12 * (0.8 + 0.5 * rnd()) * (rank < 16 ? 1.3 : 1));
+      let ask, flexP;
+      if (p.t < 0) {
+        // 해외 소규모 구단 소속 유망주: 유럽 1~4부 구단보다 훨씬 싸게 부르고 흥정에도 잘 응한다
+        ask = valueOf(p) * (0.35 + 0.25 * rnd()); flexP = 0.85; n.oc = true;
+      } else {
+        const seller = W.teams[p.t];
+        if (seller.pl.length <= 20) return { err: '상대 구단이 선수단 부족으로 협상을 거부했습니다.' };
+        const rank = seller.pl.filter(i => W.P[i].ca > p.ca).length, yl = yearsLeft(p);
+        if (kind === 'loan') { ask = valueOf(p) * 0.12 * (0.8 + 0.5 * rnd()) * (rank < 16 ? 1.3 : 1); flexP = 0.7; }
+        else {
+          ask = valueOf(p) * (1.1 + 0.4 * rnd()) * (rank < 3 ? 1.2 : 1);
+          ask *= yl <= 0 ? 0.6 : yl === 1 ? 0.85 : 1;   // 계약이 얼마 안 남은 선수는 싸게 내놓는다
+          flexP = rank < 3 ? 0.4 : rank < 11 ? 0.6 : 0.8;
+          n.refuse = refuseDecision(p);
+        }
+        ask *= curMult();   // 시즌 중에는 구단들이 선수를 내놓기 꺼려 더 높게 부른다
+        n.sel = p.t;
       }
-      n.ask = r1(n.ask * (W.tw.mult || 1));   // 시즌 중 이적시장에서는 구단들이 선수를 내놓기 꺼려 더 높게 부른다
-      n.msg = '구단에 제안서를 보냈습니다. 다음 턴에 답변이 옵니다.';
+      ask = r1(Math.max(0.1, ask));
+      n.stage = 'club'; n.status = 'pending'; n.offer = r1(fee);
+      n.ask = ask; n.ask0 = ask; n.flex = rnd() < flexP; n.floor = n.flex ? r1(ask * (0.8 + 0.1 * rnd())) : ask;
+      n.msg = `구단에 제안서를 보냈습니다. ${turnWord()}에 답변이 옵니다.`;
     }
+    n.join = joinTiming(p);
+    W.tw.neg.push(n);
+    return { neg: n };
+  }
+  // 재계약: 계약이 1년 이하로 남은 내 선수와 개인 협상 (시즌 중에도 가능)
+  function twRenew(pid) {
+    if (!canNegotiate()) return { err: '시즌 정산 중에는 협상할 수 없습니다.' };
+    const t = userTeam(), p = W.P[pid];
+    if (!p || p.t !== t.id) return { err: '내 팀 선수가 아닙니다.' };
+    if (p.loan) return { err: '임대로 온 선수는 재계약할 수 없습니다.' };
+    const yl = yearsLeft(p);
+    if (yl > 1) return { err: `계약이 ${yl}년 더 남아 있어 아직 재계약할 수 없습니다. (남은 기간 1년 이하부터 가능)` };
+    if (W.tw.neg.some(n => n.pid === pid && negActive(n))) return { err: '이미 협상 중인 선수입니다.' };
+    const n = { id: W.tw.nid++, pid, kind: 'renew', turn: W.tw.turn, rej: 0, rounds: 0, cc: 0, msg: '', sel: null };
+    enterPlayerStage(n);
+    const top = t.pl.map(id => W.P[id].ca).sort((a, b) => b - a).slice(0, 14);
+    const avg = top.reduce((a, b) => a + b, 0) / Math.max(1, top.length);
+    n.refuse = p.ca > avg + 15 && rnd() < 0.4;   // 팀 수준보다 훨씬 잘하는 선수는 떠나고 싶어 할 수 있다
+    n.msg = '재계약 협상을 시작했습니다. 연봉과 계약 기간(연장 연수)을 제안하세요.';
     W.tw.neg.push(n);
     return { neg: n };
   }
@@ -1200,9 +1573,10 @@
   function twOfferClub(id, fee) {
     const n = findNeg(id), t = userTeam();
     if (!n || n.stage !== 'club' || (n.status !== 'rejected' && n.status !== 'counter')) return { err: '지금은 새 제안을 보낼 수 없습니다.' };
+    if (!canNegotiate()) return { err: '시즌 정산 중에는 협상할 수 없습니다.' };
     if (!(fee > 0)) return { err: '제안 이적료를 입력하세요.' };
     if (fee > t.bud) return { err: '예산을 초과하는 제안입니다.' };
-    n.offer = r1(fee); n.status = 'pending'; n.msg = '수정된 제안을 보냈습니다. 다음 턴에 답변이 옵니다.';
+    n.offer = r1(fee); n.status = 'pending'; n.msg = `수정된 제안을 보냈습니다. ${turnWord()}에 답변이 옵니다.`;
     return {};
   }
   function twAcceptCounter(id) {
@@ -1215,9 +1589,10 @@
   function twOfferPlayer(id, wage, years) {
     const n = findNeg(id);
     if (!n || n.stage !== 'player' || (n.status !== 'open' && n.status !== 'rejected' && n.status !== 'counter')) return { err: '지금은 새 제안을 보낼 수 없습니다.' };
+    if (!canNegotiate()) return { err: '시즌 정산 중에는 협상할 수 없습니다.' };
     if (!(wage > 0)) return { err: '연봉을 입력하세요.' };
     n.offerW = r2(wage); n.offerY = clamp(Math.round(years) || 1, 1, 5); n.status = 'pending';
-    n.msg = '선수 측에 계약 조건을 전달했습니다. 다음 턴에 답변이 옵니다.';
+    n.msg = `선수 측에 계약 조건을 전달했습니다. ${turnWord()}에 답변이 옵니다.`;
     return {};
   }
   function twAcceptPlayerCounter(id) {
@@ -1227,17 +1602,45 @@
     return completeDeal(n);
   }
   function twCancel(id) { const n = findNeg(id); if (n && negActive(n)) { n.status = 'cancelled'; n.msg = '협상을 중단했습니다.'; } return {}; }
+  // 합류: 1군이 가득 차면 2군으로
+  function joinTeam(p, t) {
+    const full = t.pl.length >= 32;
+    p.t = t.id; p.sn = null; p.r2 = full; (full ? t.res : t.pl).push(p.id); fixNumbers(t); t.lu = null;
+    return full;
+  }
   function completeDeal(n) {
     const p = W.P[n.pid], t = userTeam();
     if (!p) { n.status = 'lost'; return { err: '선수를 찾을 수 없습니다.' }; }
-    const bonus = r2(n.offerW * 0.5), total = r1((n.fee || 0) + bonus);
-    if (t.pl.length >= 32) { n.status = 'failed'; n.msg = '선수단이 가득 차 계약이 무산되었습니다.'; return { err: n.msg }; }
+    const bonus = r2(n.offerW * 0.5);
+    if (n.kind === 'renew') {
+      if (bonus > t.bud) { n.status = 'failed'; n.msg = `예산 부족으로 재계약이 무산되었습니다. (계약금 ${bonus}M)`; return { err: n.msg }; }
+      t.bud = r1(t.bud - bonus); p.w = n.offerW; p.ce = Math.max(p.ce || W.season, W.season) + n.offerY;
+      n.status = 'done'; n.msg = `재계약 완료! 연봉 ${n.offerW}M, ${p.ce}시즌까지 (계약금 ${bonus}M)`;
+      log(`🖊 ${p.n} 재계약 — 연봉 ${n.offerW}M, ${p.ce}시즌까지`);
+      return { ok: true };
+    }
+    const total = r1((n.fee || 0) + bonus);
+    const later = joinTiming(p) === 'next';
+    if (!later && t.pl.length >= 32 && (t.res || []).length >= RES_MAX) { n.status = 'failed'; n.msg = '선수단이 가득 차 계약이 무산되었습니다.'; return { err: n.msg }; }
     if (total > t.bud) { n.status = 'failed'; n.msg = `예산 부족으로 계약이 무산되었습니다. (필요 ${total}M)`; return { err: n.msg }; }
-    if (p.t >= 0) { const s = W.teams[p.t]; s.pl = s.pl.filter(x => x !== p.id); s.lu = null; delete s.pt[p.id]; s.bud = r1(s.bud + (n.fee || 0)); }
-    else { const cid = p.c, arr = W.pool[cid]; if (arr) { const i = arr.indexOf(p.id); if (i >= 0) arr.splice(i, 1); } delete p.c; if (cid) fillPool(cid, 500); }
-    t.bud = r1(t.bud - total); p.t = t.id; p.sn = null; t.pl.push(p.id); fixNumbers(t); t.lu = null; p.w = n.offerW; p.ce = W.season + n.offerY - 1; p.cd = 100;
-    n.status = 'done'; n.msg = `계약 완료! 연봉 ${n.offerW}M, ${n.offerY}년 (이적료 ${n.fee || 0}M + 계약금 ${bonus}M)`;
-    log(`✍️ ${p.n} 영입 완료 — 이적료 ${n.fee || 0}M + 계약금 ${bonus}M, 연봉 ${n.offerW}M × ${n.offerY}년`);
+    if (p.t >= 0) { const s = W.teams[p.t]; s.bud = r1(s.bud + (n.fee || 0)); }
+    if (p.t < 0 && p.c) { const cid = p.c, arr = W.pool[cid]; if (arr) { const i = arr.indexOf(p.id); if (i >= 0) arr.splice(i, 1); fillPool(cid, 500); } }
+    t.bud = r1(t.bud - total);
+    const cost = `이적료 ${n.fee || 0}M + 계약금 ${bonus}M`;
+    if (later) {
+      p.pend = { to: t.id, w: n.offerW, ce: contractEnd(n.offerY) };
+      W.pendIn = W.pendIn || []; W.pendIn.push(p.id);
+      n.status = 'done'; n.msg = `계약 완료! 다음 이적시장이 열리면 합류합니다. 연봉 ${n.offerW}M, ${n.offerY}년 (${cost})`;
+      log(`✍️ ${p.n} 계약 — 다음 이적시장에 합류 예정 (${cost}, 연봉 ${n.offerW}M × ${n.offerY}년)`);
+      return { ok: true, later: true };
+    }
+    if (p.t >= 0) removeFromTeam(p);
+    if (p.fa) removeFA(p);
+    delete p.c;
+    const toRes = joinTeam(p, t);
+    p.w = n.offerW; p.ce = contractEnd(n.offerY); p.cd = n.fa ? Math.max(p.cd, 70) : 100;
+    n.status = 'done'; n.msg = `계약 완료! 연봉 ${n.offerW}M, ${n.offerY}년 (${cost})${toRes ? ' — 1군이 가득 차 2군에 등록' : ''}`;
+    log(`✍️ ${p.n} 영입 완료${n.fa ? ' (무소속, 즉시 합류)' : ''} — ${cost}, 연봉 ${n.offerW}M × ${n.offerY}년`);
     return { ok: true };
   }
   // 임대 불가 사유: 팀 내 능력 순위가 주전급이거나 능력이 매우 높은 선수일수록 임대할 수 없다
@@ -1245,7 +1648,9 @@
     const p = typeof pid === 'object' ? pid : W.P[pid];
     if (!p) return '선수를 찾을 수 없습니다.';
     if (p.loan) return '이미 임대 중인 선수입니다.';
-    if (p.t < 0) return '무소속 선수는 임대가 아니라 영입 협상으로 계약합니다.';
+    if (p.fa) return '무소속 선수는 임대가 아니라 개인 계약으로 영입합니다.';
+    if (p.t < 0) return '해외 구단 유망주는 임대가 아니라 이적 협상으로 영입합니다.';
+    if (p.r2) return '2군 선수는 임대할 수 없습니다.';
     const tm = W.teams[p.t];
     const rank = tm.pl.filter(i => W.P[i].ca > p.ca).length;
     if (rank < 11) return '팀의 핵심(주전급) 선수라 임대할 수 없습니다.';
@@ -1256,11 +1661,19 @@
     const p = W.P[n.pid], t = userTeam();
     if (!p) { n.status = 'lost'; return { err: '선수를 찾을 수 없습니다.' }; }
     const fee = n.fee || 0;
-    if (t.pl.length >= 32) { n.status = 'failed'; n.msg = '선수단이 가득 차 임대가 무산되었습니다.'; return { err: n.msg }; }
+    const later = joinTiming(p) === 'next';
+    if (!later && t.pl.length >= 32) { n.status = 'failed'; n.msg = '선수단이 가득 차 임대가 무산되었습니다.'; return { err: n.msg }; }
     if (fee > t.bud) { n.status = 'failed'; n.msg = `예산 부족으로 임대가 무산되었습니다. (필요 ${fee}M)`; return { err: n.msg }; }
     const s = W.teams[p.t];
-    s.pl = s.pl.filter(x => x !== p.id); s.lu = null; delete s.pt[p.id]; s.bud = r1(s.bud + fee);
-    t.bud = r1(t.bud - fee); p.loan = { from: s.id }; p.t = t.id; p.sn = null; t.pl.push(p.id); fixNumbers(t); t.lu = null; p.cd = Math.max(p.cd, 80);
+    s.bud = r1(s.bud + fee); t.bud = r1(t.bud - fee);
+    if (later) {
+      p.pend = { to: t.id, loan: true }; W.pendIn = W.pendIn || []; W.pendIn.push(p.id);
+      n.status = 'done'; n.msg = `임대 합의! 임대료 ${fee}M. 다음 이적시장이 열리면 합류하고, 그 시즌이 끝나면 ${s.name}로 복귀합니다.`;
+      log(`🤝 ${p.n} 임대 합의 — 다음 이적시장에 합류 예정 (임대료 ${fee}M)`);
+      return { ok: true, later: true };
+    }
+    removeFromTeam(p);
+    p.loan = { from: s.id }; joinTeam(p, t); p.cd = Math.max(p.cd, 80);
     n.status = 'done'; n.msg = `임대 완료! 임대료 ${fee}M. 연봉 ${wageOf(p)}M은 우리 팀이 부담하고, 시즌 종료 후 ${s.name}로 복귀합니다.`;
     log(`🤝 ${p.n} 임대 영입 — 임대료 ${fee}M, 연봉 ${wageOf(p)}M 부담 (시즌 후 ${s.name} 복귀)`);
     return { ok: true };
@@ -1281,28 +1694,60 @@
     W.tw.inbox = W.tw.inbox.filter(o => !(o.kind === 'loan' && o.pid === pid));
     return {};
   }
+  // 흥정 규칙: 크게 모자라면 그냥 거절(얼마나 모자란지 알려주지 않음), 타협의 여지가 있는 금액이면 상대가 원하는 금액을 제시.
+  // 상대가 유연하면(flex) 다음 제안부터 요구액을 내 제안 쪽으로 조금씩 좁히고, 유연하지 않으면 처음 요구액을 끝까지 고수한다.
+  function haggle(o, offer) {
+    if (offer >= o.ask * 0.999) return { r: 'accept', v: offer };
+    if (offer < o.ask * 0.7) return { r: 'reject' };
+    if (!o.flex || !o.cc) { o.cc = (o.cc || 0) + 1; return { r: 'counter', v: o.ask, firm: !o.flex && o.cc > 1 }; }
+    const na = Math.max(o.floor, o.ask - (o.ask - offer) * (0.3 + 0.2 * rnd()));
+    if (na <= offer * 1.02) return { r: 'accept', v: offer };
+    o.ask = na; o.cc++;
+    return { r: 'counter', v: na, narrowed: true };
+  }
+  function negLost(n, p) {
+    if (!p) return true;
+    if (n.kind === 'renew') return p.t !== W.u.team;
+    if (n.fa) return !p.fa;
+    if (n.sel != null) return p.t !== n.sel || !!p.pend;
+    return !!p.pend;
+  }
   function resolveNeg(n) {
     const p = W.P[n.pid];
-    if (!p || (n.sel != null && p.t !== n.sel)) { n.status = 'lost'; n.msg = '다른 구단이 먼저 영입했습니다.'; return; }
+    if (negLost(n, p)) { n.status = 'lost'; n.msg = n.kind === 'renew' ? '선수가 팀을 떠나 협상이 무산되었습니다.' : '다른 구단이 먼저 영입했습니다.'; return; }
+    n.rounds = (n.rounds || 0) + 1;
     if (n.stage === 'club') {
-      const ratio = n.offer / n.ask;
-      if (ratio >= 1) { n.fee = n.offer; if (n.kind === 'loan') { completeLoan(n); return; } enterPlayerStage(n); n.msg = '✅ 구단이 이적료 제안을 수락했습니다. 선수 개인 협상을 진행하세요.'; }
-      else if (ratio >= 0.85) { n.status = 'counter'; n.counter = r1(n.ask * (0.97 + 0.05 * rnd())); n.msg = `🔁 구단이 ${n.counter}M을 역제안했습니다.`; }
-      else {
-        n.status = 'rejected'; n.rej++;
-        n.msg = ratio < 0.6 ? '❌ 제안 금액이 요구액에 한참 못 미칩니다.' : ratio < 0.75 ? '❌ 제안 금액이 요구액보다 많이 부족합니다.' : '❌ 제안 금액이 조금 부족합니다.';
-        if (n.rej >= 5) { n.status = 'failed'; n.msg = '❌ 구단이 협상을 중단했습니다.'; }
-      }
+      const club = n.oc ? ocName(p) : W.teams[p.t].name;
+      if (n.refuse) { n.status = 'failed'; n.msg = `❌ ${club}이(가) 판매를 거부했습니다. 팀의 핵심 선수이고 계약이 ${yearsLeft(p)}년 더 남아 있어 금액과 관계없이 내줄 생각이 없습니다.`; return; }
+      const o = { ask: n.ask, floor: n.floor, flex: n.flex, cc: n.cc };
+      const h = haggle(o, n.offer);
+      n.ask = r1(o.ask); n.cc = o.cc;
+      if (h.r === 'accept') { n.fee = n.offer; if (n.kind === 'loan') { completeLoan(n); return; } enterPlayerStage(n); n.msg = '✅ 구단이 제안을 수락했습니다. 선수 개인 협상을 진행하세요.'; }
+      else if (h.r === 'counter') {
+        n.status = 'counter'; n.counter = r1(h.v);
+        n.msg = h.narrowed ? `🔁 구단이 요구액을 ${n.counter}M으로 낮췄습니다.` : h.firm ? `🔁 구단이 ${n.counter}M에서 물러서지 않습니다.` : `🔁 구단이 ${n.counter}M을 원합니다.`;
+      } else { n.status = 'rejected'; n.rej++; n.msg = '❌ 구단이 제안을 거절했습니다.'; }
     } else {
-      const sc = (n.offerW / n.dem.w) * (n.offerY < n.dem.y - 1 ? 0.93 : 1);
-      if (sc >= 1) completeDeal(n);
-      else if (sc >= 0.85) { n.status = 'counter'; n.counterW = r2(n.dem.w * (0.97 + 0.05 * rnd())); n.msg = `🔁 선수 측이 연봉 ${n.counterW}M(${n.dem.y}년)을 요구합니다.`; }
-      else {
-        n.status = 'rejected'; n.rej++;
-        n.msg = sc < 0.6 ? '❌ 선수가 제시한 연봉에 크게 실망했습니다.' : '❌ 선수가 제시한 연봉에 만족하지 않습니다.';
-        if (n.rej >= 5) { n.status = 'failed'; n.msg = '❌ 선수가 협상을 거부했습니다.'; }
-      }
+      if (n.refuse) { n.status = 'failed'; n.msg = `❌ ${p.n}이(가) 재계약을 거절했습니다. 더 큰 무대에서 뛰고 싶어 합니다.`; return; }
+      const off = n.offerW * (n.offerY < n.dem.y - 1 ? 0.93 : 1);   // 원하는 기간보다 많이 짧으면 덜 매력적
+      const o = n.dem; o.cc = n.cc;
+      const h = haggle(o, off);
+      n.cc = o.cc; o.ask = r2(o.ask);
+      if (h.r === 'accept') { completeDeal(n); return; }
+      if (h.r === 'counter') {
+        n.status = 'counter'; n.counterW = r2(h.v);
+        n.msg = h.narrowed ? `🔁 선수 측이 요구 연봉을 ${n.counterW}M(${n.dem.y}년)으로 낮췄습니다.` : h.firm ? `🔁 선수 측이 연봉 ${n.counterW}M(${n.dem.y}년)에서 물러서지 않습니다.` : `🔁 선수 측이 연봉 ${n.counterW}M(${n.dem.y}년)을 원합니다.`;
+      } else { n.status = 'rejected'; n.rej++; n.msg = '❌ 선수가 제안을 거절했습니다.'; }
     }
+    if (n.status === 'rejected' && n.rej >= 5) { n.status = 'failed'; n.msg = n.stage === 'club' ? '❌ 구단이 협상을 중단했습니다.' : '❌ 선수가 협상을 거부했습니다.'; }
+    else if (negActive(n) && n.rounds >= 12) { n.status = 'failed'; n.msg = '❌ 협상이 너무 길어져 상대가 협상을 중단했습니다.'; }
+  }
+  // 협상 진행: 이적시장에서는 매 턴, 시즌 중에는 매주 호출
+  function negTick() {
+    if (!W.tw) return;
+    W.tw.neg.filter(negActive).forEach(n => { if (negLost(n, W.P[n.pid])) { n.status = 'lost'; n.msg = n.kind === 'renew' ? '선수가 팀을 떠나 협상이 무산되었습니다.' : '다른 구단이 먼저 영입했습니다.'; } });
+    W.tw.neg.filter(n => n.status === 'pending').forEach(resolveNeg);
+    if (W.state === 'play') aiSignFA(1);
   }
   function aiTrades(count) {
     const ais = W.teams.filter(x => x.id !== W.u.team && x.cid !== 'RND');
@@ -1312,13 +1757,26 @@
       if (a === b || a.pl.length <= 21 || b.pl.length >= 30) continue;
       const top = b.pl.map(id => W.P[id].ca).sort((x, y) => y - x).slice(0, 14);
       const avg = top.reduce((x, y) => x + y, 0) / top.length;
-      const cand = a.pl.map(id => W.P[id]).filter(p => !p.loan && p.ca >= avg - 4 && valueOf(p) * 1.2 <= b.bud * 0.5);
+      const cand = a.pl.map(id => W.P[id]).filter(p => !p.loan && !p.pend && p.ca >= avg - 4 && valueOf(p) * 1.2 <= b.bud * 0.5);
       if (!cand.length) continue;
       const p = pick(cand), price = r1(valueOf(p) * 1.2 * (W.tw.mult || 1));
       a.pl = a.pl.filter(x => x !== p.id); a.lu = null; delete a.pt[p.id];
-      b.pl.push(p.id); b.lu = null; p.t = b.id; p.sn = null; fixNumbers(b); a.bud = r1(a.bud + price); b.bud = r1(b.bud - price); moved++;
+      b.pl.push(p.id); b.lu = null; p.t = b.id; p.sn = null; p.ce = contractEnd(ri(2, 5)); fixNumbers(b); a.bud = r1(a.bud + price); b.bud = r1(b.bud - price); moved++;
     }
     return moved;
+  }
+  // AI 구단도 무소속 선수와 계약한다 (선수단이 적은 팀이 자기 수준에 맞는 선수를 데려감)
+  function aiSignFA(count) {
+    for (let k = 0; k < count && W.fa.length; k++) {
+      const tm = pick(W.teams);
+      if (!tm || tm.id === W.u.team || tm.cid === 'RND' || tm.pl.length >= 26) continue;
+      const top = tm.pl.map(id => W.P[id].ca).sort((a, b) => b - a).slice(0, 14);
+      const avg = top.reduce((a, b) => a + b, 0) / Math.max(1, top.length);
+      const c = W.fa.map(id => W.P[id]).filter(p => p && p.ca >= avg - 14 && p.ca <= avg + 4 && marketWage(p) <= tm.bud * 0.2);
+      if (!c.length) continue;
+      const p = c.sort((a, b) => b.ca - a.ca)[0];
+      removeFA(p); p.t = tm.id; p.r2 = false; tm.pl.push(p.id); p.w = marketWage(p); p.ce = contractEnd(ri(1, 3)); fixNumbers(tm); tm.lu = null;
+    }
   }
   function genInbox() {
     const t = userTeam();
@@ -1367,6 +1825,7 @@
     const p = W.P[o.pid], b = W.teams[o.from];
     if (!p || p.t !== t.id) return { err: '이미 처리된 제안입니다.' };
     if (t.pl.length <= 19) return { err: '선수단 최소 인원(19명)을 유지해야 합니다.' };
+    W.tw.neg.filter(n => n.pid === p.id && negActive(n)).forEach(n => { n.status = 'cancelled'; n.msg = '선수를 내보내 협상을 중단했습니다.'; });
     if (o.kind === 'loan') {
       t.pl = t.pl.filter(x => x !== p.id); t.lu = null; delete t.pt[p.id];
       b.pl.push(p.id); b.lu = null; p.t = b.id; p.loan = { from: t.id }; p.sn = null; fixNumbers(b);
@@ -1394,11 +1853,11 @@
     if (W.state !== 'transfer') return;
     const tw_ = W.tw, t = userTeam();
     aiTrades(tw_.kind === 'mid' ? 12 : 25);
-    tw_.neg.filter(negActive).forEach(n => { const p = W.P[n.pid]; if (!p || (n.sel != null && p.t !== n.sel)) { n.status = 'lost'; n.msg = '다른 구단이 먼저 영입했습니다.'; } });
-    tw_.neg.filter(n => n.status === 'pending').forEach(resolveNeg);
+    aiSignFA(tw_.kind === 'mid' ? 2 : 5);
+    negTick();
     tw_.inbox = tw_.inbox.filter(o => o.exp > tw_.turn);
     genInbox(); genLoanOffers();
-    t.pl.forEach(id => { const p = W.P[id]; p.cd = clamp(p.cd + (tw_.kind === 'mid' ? 5 : 15), 0, 100); });
+    t.pl.concat(t.res || []).forEach(id => { const p = W.P[id]; p.cd = clamp(p.cd + (tw_.kind === 'mid' ? 5 : 15), 0, 100); });
     for (const id in W.P) { const p = W.P[id]; if (p.inj > 0 && p.t >= 0 && (tw_.kind !== 'mid' || tw_.turn % 3 === 0)) p.inj--; }
     tw_.turn++;
     if (tw_.turn % 5 === 0) genRecs();
@@ -1408,18 +1867,20 @@
   function twEnd() {
     if (W.state !== 'transfer') return;
     const kind = W.tw.kind;
-    W.tw.neg.filter(negActive).forEach(n => { n.status = 'cancelled'; });
+    // 진행 중인 협상은 취소하지 않고 시즌 중에도 이어진다 (계약되면 다음 이적시장에 합류)
     W.teams.forEach(tm => { ensureSquad(tm); fixNumbers(tm); tm.lu = null; });
     W.state = 'play';
     if (kind !== 'mid') { W.week = 1; log(`🏁 이적시장이 닫혔습니다. ${W.season}시즌 개막! 시즌 목표: ${W.u.targetRank}위 이내`); }
     else log('🏁 시즌 중 이적시장이 닫혔습니다. 후반기가 시작됩니다.');
+    reserveMatchday();
   }
 
   /* ---------- 유러피언 마스터스컵 (챔피언스리그 오마주) ---------- */
   const CL_NAME = '유러피언 마스터스컵';
   const CL_LP_WEEKS = [3, 6, 9, 12, 15, 18, 21, 24];
   const CL_KO = { po: [27, 28], r16: [31, 32], qf: [34, 35], sf: [37, 38], final: [40] };
-  const CL_PRIZE = { lp: 3, po: 5, r16: 8, qf: 12, sf: 16, final: 20, champion: 28 };
+  const CL_PRIZE = { lp: 15, po: 22, r16: 32, qf: 45, sf: 60, final: 80, champion: 110 };   // 도달 단계별 누적 상금(M)
+  const CL_WIN = 2.5, CL_DRAW = 0.8;   // 리그 페이즈 승리·무승부 수당
   const CL_STAGE_NAME = { lp: '리그 페이즈 탈락', po: '플레이오프 탈락', r16: '16강 탈락', qf: '8강 탈락', sf: '4강 탈락', final: '준우승', champion: '우승' };
   function createRndTeams() {
     const lvs = [];
@@ -1539,8 +2000,9 @@
     } else if (cl.phase === 'final' && w === CL_KO.final[0]) {
       const win = clResolve('final');
       cl.champion = win[0]; cl.phase = 'done';
-      cl.teams.forEach(id => { W.teams[id].bud = r1(W.teams[id].bud + CL_PRIZE[cl.stage[id]]); });
-      if (W.u && cl.teams.includes(W.u.team)) { const st = cl.stage[W.u.team]; log(`💶 ${CL_NAME} 상금 ${CL_PRIZE[st]}M 수령 (${CL_STAGE_NAME[st]})`); }
+      cl.prizeOf = {};
+      cl.teams.forEach(id => { const r = cl.table[id], v = r1(CL_PRIZE[cl.stage[id]] + CL_WIN * r.w + CL_DRAW * r.d); cl.prizeOf[id] = v; W.teams[id].bud = r1(W.teams[id].bud + v); });
+      if (W.u && cl.teams.includes(W.u.team)) { const st = cl.stage[W.u.team]; log(`💶 ${CL_NAME} 상금 ${cl.prizeOf[W.u.team]}M 수령 (${CL_STAGE_NAME[st]}, 리그 페이즈 수당 포함)`); }
     }
   }
   function userFixtures() {
@@ -1575,7 +2037,20 @@
     return Promise.race([op, to]);
   }
   function save() { return idbOp('readwrite', st => st.put(W, 'slot1')).then(() => true).catch(() => false); }
-  function load() { return idbOp('readonly', st => st.get('slot1')).then(d => { if (!d) return false; W = d; return true; }).catch(() => false); }
+  function load() { return idbOp('readonly', st => st.get('slot1')).then(d => { if (!d) return false; W = d; migrate(); return true; }).catch(() => false); }
+  // 이전 버전 세이브 보정 (키·몸무게, 계약, 2군, 무소속 목록 등 새 필드 채우기)
+  function migrate() {
+    W.fa = W.fa || []; W.pendIn = W.pendIn || []; W.tick = W.tick || 0;
+    if (!W.oc || !Object.keys(W.oc).length) { W.oc = {}; CONTINENTS.forEach(ct => { W.oc[ct.id] = genOverseasClubs(ct.id); }); }
+    for (const id in W.P) {
+      const p = W.P[id];
+      if (p.h == null) { p.h = Math.round(clamp([189, 184, 178, 181][p.p] + norm() * 5.5, 163, 203)); p.kg = Math.round(clamp((p.h - 100) * 0.88 + norm() * 4, 55, 100)); }
+      if (p.ce == null) p.ce = W.season + ri(0, 3);
+      if (p.w == null) p.w = r2(marketWage(p) * 0.9);
+      if (p.t < 0 && p.c && p.oc == null) p.oc = ri(0, 23);
+    }
+    W.teams.forEach(tm => { if (!tm.res) { tm.res = []; for (let i = 0; i < RES_SIZE; i++) addReserve(tm, [0, 1, 1, 2, 2, 3, 3, 1][i % 8], ri(17, 21)); } });
+  }
   function hasSave() { return idbOp('readonly', st => st.count()).then(n => n > 0).catch(() => false); }
   function clearSave() { return idbOp('readwrite', st => st.clear()).catch(() => false); }
 
@@ -1586,10 +2061,12 @@
     world, newWorld, startGame, userTeam, userFixture, slotsFor, autoLineup, currentLineup, simulateMatch, createMatch, advanceWeek, nextSeason,
     sortedTable, calcCA, caAs, refresh, valueOf, star, evaluate, ownEval, doSearch, doJudge, buy, release, genPlayer,
     save, load, hasSave, clearSave, defaultTac, log, sortedTableByLeague: (cid, t) => sortedTable(W.lg[cid][t]),
-    _debug: { makeSide, trainWeek, buildReport }
+    _debug: { makeSide, trainWeek, buildReport, migrate: () => migrate() }, applyUserFatigue, leaguePrize, CL_PRIZE
   };
   Object.assign(root.G, {
     userFixtures, twSaleList, twSaleCancel, negBlock, genRecs: () => genRecs(), twLoanOut, twLoanCancel, loanBlock, wageOf, teamWages, setNumber, fixNumbers, startWindow, twStart, twOfferClub, twAcceptCounter, twOfferPlayer, twAcceptPlayerCounter, twCancel,
-    twNext, twEnd, twInboxAccept, twInboxReject, twEst: pid => estPrice(W.P[pid]), CL_NAME, CL_STAGE_NAME, CL_LP_WEEKS, CL_KO, clRank: () => clRank(), tieAgg
+    twNext, twEnd, twInboxAccept, twInboxReject, twEst: pid => estPrice(W.P[pid]), CL_NAME,
+    twRenew, yearsLeft: p => yearsLeft(p), canNegotiate: () => canNegotiate(), joinTiming: p => joinTiming(p), ocName, marketWage, wageDemand, refuseChance,
+    toReserve, toFirst, resFixture: (tm, w) => resFixture(tm, w), RES_MAX, negActive, contractExpiry, CL_STAGE_NAME, CL_LP_WEEKS, CL_KO, clRank: () => clRank(), tieAgg
   });
 })(typeof window !== 'undefined' ? window : globalThis);
